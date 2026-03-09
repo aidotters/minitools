@@ -474,7 +474,9 @@ class NotionPublisher:
                 "rich_text": [{"text": {"content": article_data["snippet"]}}]
             }
 
-        # Date は created_time型なので自動的に設定される（明示的な設定は不要）
+        # Date（メール受信日をdate型プロパティとして明示的に設定）
+        if "date" in article_data:
+            properties["Date"] = {"date": {"start": article_data["date"]}}
 
         # タグ
         if "tags" in article_data and isinstance(article_data["tags"], list):

@@ -372,7 +372,15 @@ class MediumScraper:
             logger.info(f"Scraping article: {url}")
 
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            await asyncio.sleep(random.uniform(2, 4))
+
+            # <article>タグの出現を明示的に待機（クライアントサイドレンダリング対応）
+            try:
+                await page.wait_for_selector("article", timeout=30000)
+            except Exception:
+                logger.warning(
+                    "Timed out waiting for <article> selector, continuing..."
+                )
+            await asyncio.sleep(random.uniform(1, 2))
 
             # Cloudflareチャレンジの検出
             if await self._is_cloudflare_challenge(page):
