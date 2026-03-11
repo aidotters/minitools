@@ -563,17 +563,17 @@ class NotionPublisher:
         )
 
         if results["success"]:
-            logger.info("【成功した論文】")
+            logger.info("【成功した記事】")
             for title in results["success"]:
                 logger.info(f"  ✓ {title}")
 
         if results["skipped"]:
-            logger.info("【スキップした論文（既存）】")
+            logger.info("【スキップした記事（既存）】")
             for title in results["skipped"]:
                 logger.info(f"  - {title}")
 
         if results["failed"]:
-            logger.info("【失敗した論文】")
+            logger.info("【失敗した記事】")
             for title in results["failed"]:
                 logger.info(f"  ✗ {title}")
 

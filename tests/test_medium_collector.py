@@ -108,22 +108,22 @@ class TestParseArticlesWithClaps:
     """parse_articles がclapsを正しく抽出するかのテスト"""
 
     def _build_email_html(self, claps_text="Claps150"):
-        """テスト用のMedium Daily Digest風HTMLを生成"""
+        """テスト用のMedium Daily Digest風HTMLを生成（新フォーマット）"""
         return f"""
         <html><body>
         <div>
             <div>
-                <div>
-                    <a href="https://medium.com/@author?source=email">Author Name</a>
-                    <a class="ag" href="https://medium.com/@author/test-article-12345?source=email-digest">
-                        <h2>Test Article Title Here</h2>
-                        <h3>This is a preview text that is long enough</h3>
-                    </a>
+                <a href="https://medium.com/@author/test-article-12345?source=email-digest">
+                    <h2>Test Article Title Here</h2>
                     <div>
-                        <span>5 min read</span>
-                        <span>{claps_text}</span>
-                        <span>Responses4</span>
+                        <span>Author Name</span>
                     </div>
+                    <div>This is a preview text that is long enough</div>
+                </a>
+                <div>
+                    <span>5 min read</span>
+                    <span>{claps_text}</span>
+                    <span>Responses4</span>
                 </div>
             </div>
         </div>

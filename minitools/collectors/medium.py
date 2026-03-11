@@ -218,9 +218,23 @@ class MediumCollector:
         articles = []
 
         # Medium Daily Digestの記事リンクパターンを探す
-        article_links = soup.find_all(
-            "a", class_="ag", href=re.compile(r"https://medium\.com/.*\?source=email")
+        # クラス名はMediumが頻繁に変更するため、h2タグの有無で記事リンクを特定
+        all_medium_links = soup.find_all(
+            "a", href=re.compile(r"https://medium\.com/.*\?source=email")
         )
+
+        # h2タグを含むリンク = 記事タイトルリンク
+        article_links = [a for a in all_medium_links if a.find("h2")]
+
+        # URL → プレビューテキストのマッピングを構築（h2なしリンクのテキストから）
+        url_previews: Dict[str, str] = {}
+        for link in all_medium_links:
+            if link.find("h2"):
+                continue
+            href = self._clean_url(str(link.get("href", "")))
+            text = link.get_text(strip=True)
+            if href and text and len(text) > 20 and href not in url_previews:
+                url_previews[href] = text[:500]
 
         seen_urls = set()
 
@@ -238,52 +252,44 @@ class MediumCollector:
 
             # タイトルの抽出（h2タグから）
             h2_tag = link.find("h2")
-            if h2_tag:
-                title = h2_tag.get_text(strip=True)
-            else:
-                title = link.get_text(strip=True)
+            title = h2_tag.get_text(strip=True) if h2_tag else link.get_text(strip=True)
 
             if not title or len(title) < 10:
                 logger.debug(f"短いタイトルをスキップ: {title}")
                 continue
 
-            # プレビューテキストの抽出（h3タグから）
-            preview = ""
-            h3_tag = link.find("h3")
-            if h3_tag:
-                preview = h3_tag.get_text(strip=True)
-                if preview and len(preview) > 20:
-                    preview = preview[:500]  # 500文字に制限
-                else:
-                    preview = ""
+            # プレビューテキストの抽出（同URLの別リンクテキスト、またはh3タグから）
+            preview = url_previews.get(clean_url, "")
+            if not preview:
+                h3_tag = link.find("h3")
+                if h3_tag:
+                    h3_text = h3_tag.get_text(strip=True)
+                    if h3_text and len(h3_text) > 20:
+                        preview = h3_text[:500]
 
-            # 著者情報の抽出（great-grandparentから著者リンクを探す）
+            # 著者情報の抽出（h2の後の兄弟divから最初のspanテキスト）
             author = "Unknown"
-            parent = link.parent
-            grandparent = parent.parent if parent else None
-            great_grandparent = grandparent.parent if grandparent else None
+            if h2_tag:
+                author_div = h2_tag.find_next_sibling("div")
+                if author_div:
+                    first_span = author_div.find("span")
+                    if first_span:
+                        author_text = first_span.get_text(strip=True)
+                        if (
+                            author_text
+                            and len(author_text) > 1
+                            and author_text != "Member only"
+                        ):
+                            author = author_text
 
-            if great_grandparent:
-                # 著者リンクを探す（medium.com/@username パターン、テキストを持つもの）
-                author_links = great_grandparent.find_all(
-                    "a", href=re.compile(r"medium\.com/@[^/]+\?")
-                )
-                for author_link in author_links:
-                    if author_link == link:
-                        continue
-                    author_text = author_link.get_text(strip=True)
-                    # 有効な著者名: 空でなく、特定のパターンでない
-                    if (
-                        author_text
-                        and len(author_text) > 1
-                        and not author_text.startswith("@")
-                        and author_text != "Member"
-                    ):
-                        author = author_text
+            # 拍手数の抽出（link.parentの兄弟divから）
+            claps = 0
+            article_container = link.parent
+            if article_container:
+                for child in article_container.children:
+                    if hasattr(child, "name") and child.name and child != link:
+                        claps = self._extract_claps(child)
                         break
-
-            # 拍手数の抽出（great_grandparent コンテナから）
-            claps = self._extract_claps(great_grandparent)
 
             article = Article(
                 title=title,
