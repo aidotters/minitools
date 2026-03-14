@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 import pytz
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -267,29 +267,47 @@ class MediumCollector:
                     if h3_text and len(h3_text) > 20:
                         preview = h3_text[:500]
 
-            # 著者情報の抽出（h2の後の兄弟divから最初のspanテキスト）
-            author = "Unknown"
-            if h2_tag:
-                author_div = h2_tag.find_next_sibling("div")
-                if author_div:
-                    first_span = author_div.find("span")
-                    if first_span:
-                        author_text = first_span.get_text(strip=True)
-                        if (
-                            author_text
-                            and len(author_text) > 1
-                            and author_text != "Member only"
-                        ):
-                            author = author_text
+            # 記事コンテナを特定（linkから上方に辿り、著者・クラップ情報を含むdivを探す）
+            # 構造: コンテナdiv > [著者div, 記事div > div > a[h2], メタdiv]
+            article_container = None
+            el: Tag | None = link
+            for _ in range(5):
+                el = el.parent if el else None
+                if not el:
+                    break
+                # コンテナは複数の直接子divを持ち、著者リンクとメタ情報を含む
+                if el.name == "div" and len(el.find_all("div", recursive=False)) >= 3:
+                    article_container = el
+                    break
 
-            # 拍手数の抽出（link.parentの兄弟divから）
-            claps = 0
-            article_container = link.parent
+            # 著者情報の抽出（コンテナ内の著者プロフィールリンクから）
+            author = "Unknown"
             if article_container:
-                for child in article_container.children:
-                    if hasattr(child, "name") and child.name and child != link:
-                        claps = self._extract_claps(child)
+                # medium.com/@username パターンの著者リンクを探す
+                author_links = article_container.find_all(
+                    "a", href=re.compile(r"medium\.com/@[^/]+\?")
+                )
+                for author_link in author_links:
+                    if author_link == link:
+                        continue
+                    # imgタグのみのリンク（アバター）はスキップ
+                    if author_link.find("img") and not author_link.string:
+                        author_text = author_link.get_text(strip=True)
+                        if not author_text:
+                            continue
+                    author_text = author_link.get_text(strip=True)
+                    if (
+                        author_text
+                        and len(author_text) > 1
+                        and author_text != "Member only"
+                    ):
+                        author = author_text
                         break
+
+            # 拍手数の抽出（コンテナ内のClapsアイコンの隣から）
+            claps = 0
+            if article_container:
+                claps = self._extract_claps(article_container)
 
             article = Article(
                 title=title,

@@ -108,23 +108,36 @@ class TestParseArticlesWithClaps:
     """parse_articles がclapsを正しく抽出するかのテスト"""
 
     def _build_email_html(self, claps_text="Claps150"):
-        """テスト用のMedium Daily Digest風HTMLを生成（新フォーマット）"""
+        """テスト用のMedium Daily Digest風HTMLを生成（実際のメール構造に準拠）"""
         return f"""
         <html><body>
         <div>
             <div>
-                <a href="https://medium.com/@author/test-article-12345?source=email-digest">
-                    <h2>Test Article Title Here</h2>
-                    <div>
-                        <span>Author Name</span>
-                    </div>
-                    <div>This is a preview text that is long enough</div>
-                </a>
                 <div>
-                    <span>5 min read</span>
-                    <span>{claps_text}</span>
-                    <span>Responses4</span>
+                    <a href="https://medium.com/@author?source=email-digest">
+                        <img alt="Author Name" height="20" width="20"/>
+                    </a>
+                    <span>
+                        <a href="https://medium.com/@author?source=email-digest">
+                            Author Name
+                        </a>
+                    </span>
                 </div>
+            </div>
+            <div>
+                <div>
+                    <a href="https://medium.com/@author/test-article-12345?source=email-digest">
+                        <h2>Test Article Title Here</h2>
+                        <div><h3>This is a preview text that is long enough to be detected</h3></div>
+                    </a>
+                </div>
+            </div>
+            <div>
+                <span>5 min read</span>
+                <img alt="Claps" height="16" width="16"/>
+                <div><span>{claps_text.replace("Claps", "")}</span></div>
+                <img alt="Responses" height="16" width="16"/>
+                <div><span>4</span></div>
             </div>
         </div>
         </body></html>

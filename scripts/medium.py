@@ -359,9 +359,13 @@ async def main_async():
                                     f"page_id={page_info.page_id}"
                                 )
 
+                                update_props = {"Translated": {"checkbox": True}}
+                                claps = article.get("claps")
+                                if claps is not None:
+                                    update_props["Claps"] = {"number": claps}
                                 prop_success = await notion_pub.update_page_properties(
                                     page_info.page_id,
-                                    {"Translated": {"checkbox": True}},
+                                    update_props,
                                 )
                                 if not prop_success:
                                     logger.error(
