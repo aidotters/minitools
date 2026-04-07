@@ -351,6 +351,10 @@ class NotionPublisher:
             properties["URL"] = {"url": normalized_url}
             logger.info(f"  Saving normalized PDF URL: {normalized_url}")
 
+        # HF Upvotes (0はHF未登録を意味するため、1以上のみ保存)
+        if article_data.get("hf_upvotes"):
+            properties["HF Upvotes"] = {"number": article_data["hf_upvotes"]}
+
         return properties
 
     def _build_medium_properties(self, article_data: Dict[str, Any]) -> Dict[str, Any]:

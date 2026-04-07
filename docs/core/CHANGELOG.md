@@ -5,6 +5,19 @@
 ## [Unreleased]
 
 ### Added
+- **ArXiv Weekly Digest 2層構成（HF Upvotes + LLMスコア）**: 客観的指標と主観的評価の2層構成でより有用な論文推薦を実現
+  - 新規コンポーネント:
+    - `minitools/researchers/hf_papers.py` - HFPapersResearcher（HuggingFace Papers APIクライアント、async + Semaphore(5) + exponential backoff）
+    - `HFPaperStats` dataclass（arxiv_id, upvotes, num_comments, found_on_hf）
+  - ArxivWeeklyProcessor拡張: `hf_researcher`パラメータ追加、`process()`を2層構成に拡張
+    - セクション1: HF upvote上位（客観的、再現性あり）
+    - セクション2: LLMスコアリング上位（セクション1除外、文脈理解）
+    - HF統計取得とトレンド調査を`asyncio.gather`で並列実行
+  - SlackPublisher拡張: `format_arxiv_weekly()`に`hf_papers`/`llm_papers`引数追加、2セクション構成出力
+  - NotionPublisher拡張: `_build_arxiv_properties()`に`HF Upvotes`（number）プロパティ追加
+  - CLI拡張: `--provider gemini`選択肢追加、`hf_top_n`/`llm_top_n`をsettings.yamlから読み込み
+  - 新規設定項目: `defaults.arxiv_weekly.hf_top_n`（デフォルト: 5）、`defaults.arxiv_weekly.llm_top_n`（デフォルト: 5）
+
 - **X フォロー中アカウント一覧取得ユーティリティ**: `x-followings` コマンドを追加
   - `scripts/x_followings.py` - フォロー中アカウント一覧を取得
   - `--user`（必須）、`--limit`、`--format`（list/yaml）オプション

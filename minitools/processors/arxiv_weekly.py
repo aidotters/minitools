@@ -4,9 +4,11 @@ ArXiv weekly digest processor for generating paper importance rankings.
 
 import asyncio
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from minitools.llm.base import BaseLLMClient, LLMError
+from minitools.researchers.hf_papers import HFPapersResearcher
 from minitools.researchers.trend import TrendResearcher
 from minitools.utils.config import get_config
 from minitools.utils.logger import get_logger
@@ -168,6 +170,7 @@ class ArxivWeeklyProcessor:
         self,
         llm_client: BaseLLMClient,
         trend_researcher: Optional[TrendResearcher] = None,
+        hf_researcher: Optional[HFPapersResearcher] = None,
         max_concurrent: int = 3,
         batch_size: Optional[int] = None,
     ):
@@ -175,11 +178,13 @@ class ArxivWeeklyProcessor:
         Args:
             llm_client: LLMクライアントインスタンス
             trend_researcher: TrendResearcherインスタンス（省略時は自動生成）
+            hf_researcher: HFPapersResearcherインスタンス（省略時はHFセクションをスキップ）
             max_concurrent: 最大並列処理数（デフォルト: 3）
             batch_size: バッチスコアリングのサイズ（省略時は設定ファイルから取得）
         """
         self.llm = llm_client
         self.trend_researcher = trend_researcher
+        self.hf_researcher = hf_researcher
         config = get_config()
         self.max_concurrent = max_concurrent or config.get(
             "processing.max_concurrent_ollama", 3
@@ -628,56 +633,207 @@ class ArxivWeeklyProcessor:
 
         return trend_info
 
+    @staticmethod
+    def _extract_arxiv_id(url: str) -> str:
+        """URLからarXiv IDを抽出
+
+        Args:
+            url: arXiv URL (例: "https://arxiv.org/abs/2601.00001v1")
+
+        Returns:
+            arXiv ID (例: "2601.00001")、抽出できない場合は空文字列
+        """
+        match = re.search(r"(\d{4}\.\d{4,5})", url)
+        return match.group(1) if match else ""
+
+    async def _fetch_hf_stats(
+        self, papers: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """論文にHF統計情報を付与
+
+        Args:
+            papers: 論文リスト
+
+        Returns:
+            hf_upvotes, hf_commentsが付与された論文リスト
+        """
+        if not self.hf_researcher:
+            return papers
+
+        # arXiv IDを抽出
+        arxiv_ids = []
+        for paper in papers:
+            url = paper.get("url", paper.get("URL", ""))
+            arxiv_id = self._extract_arxiv_id(url)
+            if arxiv_id:
+                arxiv_ids.append(arxiv_id)
+
+        if not arxiv_ids:
+            logger.warning("No arXiv IDs found in papers")
+            return papers
+
+        try:
+            stats_map = await self.hf_researcher.get_papers_stats(arxiv_ids)
+        except Exception as e:
+            logger.warning(f"Failed to fetch HF stats: {e}")
+            return papers
+
+        # 各論文にHF統計を付与
+        for paper in papers:
+            url = paper.get("url", paper.get("URL", ""))
+            arxiv_id = self._extract_arxiv_id(url)
+            if arxiv_id and arxiv_id in stats_map:
+                stats = stats_map[arxiv_id]
+                paper["hf_upvotes"] = stats.upvotes
+                paper["hf_comments"] = stats.num_comments
+
+        return papers
+
+    async def _select_hf_top_papers(
+        self,
+        papers: List[Dict[str, Any]],
+        hf_top_n: int,
+    ) -> List[Dict[str, Any]]:
+        """HF upvote上位の論文を選出
+
+        Args:
+            papers: hf_upvotesが付与された論文リスト
+            hf_top_n: 選出する件数
+
+        Returns:
+            upvote > 0 の論文をupvote降順で上位hf_top_n件
+        """
+        # upvote > 0 の論文のみ
+        hf_candidates = [p for p in papers if p.get("hf_upvotes", 0) > 0]
+
+        # upvote降順ソート（同値はコメント数で二次ソート）
+        hf_candidates.sort(
+            key=lambda x: (x.get("hf_upvotes", 0), x.get("hf_comments", 0)),
+            reverse=True,
+        )
+
+        selected = hf_candidates[:hf_top_n]
+        if selected:
+            logger.info(
+                f"HF section: selected {len(selected)} papers "
+                f"(upvotes range: {selected[0].get('hf_upvotes', 0)} - "
+                f"{selected[-1].get('hf_upvotes', 0)})"
+            )
+        else:
+            logger.info("HF section: no papers with upvotes > 0")
+
+        return selected
+
     async def process(
         self,
         papers: List[Dict[str, Any]],
         top_n: int = 10,
         use_trends: bool = True,
+        hf_top_n: int = 5,
+        llm_top_n: int = 5,
     ) -> Dict[str, Any]:
         """
-        一括処理: トレンド調査 → スコアリング → 選出 → ハイライト生成
+        一括処理: HF統計取得 → トレンド調査 → スコアリング → 選出 → ハイライト生成
+
+        2層構成:
+        - セクション1: HF upvote上位 (hf_researcher が指定されている場合)
+        - セクション2: LLMスコアリング上位 (セクション1を除外した残り)
 
         Args:
             papers: 全論文リスト
-            top_n: 上位論文数（デフォルト: 10）
-            use_trends: Trueの場合、Tavily APIでトレンドを調査してスコアリングに使用
+            top_n: 上位論文数（後方互換、hf_researcher未指定時に使用）
+            use_trends: Trueの場合、Tavily APIでトレンドを調査
+            hf_top_n: HFセクションの取得件数（デフォルト: 5）
+            llm_top_n: LLMセクションの取得件数（デフォルト: 5）
 
         Returns:
             処理結果の辞書:
             - trend_info: トレンド情報（use_trends=Falseの場合はNone）
-            - papers: 上位論文リスト（ハイライト付き）
+            - papers: 全セクションの論文をマージ（後方互換）
             - total_papers: 処理した論文総数
+            - hf_papers: セクション1の論文リスト（HF upvote上位）
+            - llm_papers: セクション2の論文リスト（LLMスコア上位）
         """
         logger.info(
             f"Starting ArXiv weekly digest processing ({len(papers)} papers)..."
         )
 
-        # 1. トレンド調査（オプション）
+        # 1. HF統計取得 & トレンド調査を並列実行
         trend_info = None
-        if use_trends and self.trend_researcher:
-            trend_info = await self.trend_researcher.get_current_trends()
-            if trend_info:
-                logger.info(
-                    f"Trend info obtained: {len(trend_info.get('topics', []))} topics"
-                )
-                # トレンドサマリーを日本語化
-                trend_info = await self._translate_trend_summary(trend_info)
+
+        if self.hf_researcher:
+            # HF統計取得とトレンド調査を並列実行
+            hf_task = self._fetch_hf_stats(papers)
+
+            if use_trends and self.trend_researcher:
+                trend_task = self.trend_researcher.get_current_trends()
+                papers, trend_info = await asyncio.gather(hf_task, trend_task)
             else:
-                logger.warning("Failed to get trend info, proceeding without trends")
+                papers = await hf_task
+        else:
+            # HFなしの場合はトレンド調査のみ
+            if use_trends and self.trend_researcher:
+                trend_info = await self.trend_researcher.get_current_trends()
 
-        # 2. 重要度スコアリング
-        scored_papers = await self.rank_papers_by_importance(papers, trends=trend_info)
+        # トレンドサマリーの日本語化
+        if trend_info:
+            logger.info(
+                f"Trend info obtained: {len(trend_info.get('topics', []))} topics"
+            )
+            trend_info = await self._translate_trend_summary(trend_info)
+        elif use_trends and self.trend_researcher:
+            logger.warning("Failed to get trend info, proceeding without trends")
 
-        # 3. 上位N件を選出
-        top_papers = await self.select_top_papers(scored_papers, top_n)
+        if self.hf_researcher:
+            # 2層構成フロー
+            # セクション1: HF upvote上位
+            hf_papers = await self._select_hf_top_papers(papers, hf_top_n)
 
-        # 4. ハイライト生成
-        highlighted_papers = await self.generate_paper_highlights(top_papers)
+            # セクション2: HF選出論文を除外 → LLMスコアリング
+            hf_urls = {p.get("url", p.get("URL", "")) for p in hf_papers}
+            remaining_papers = [
+                p for p in papers if p.get("url", p.get("URL", "")) not in hf_urls
+            ]
 
-        logger.info("ArXiv weekly digest processing completed")
+            logger.info(
+                f"LLM section: scoring {len(remaining_papers)} remaining papers"
+            )
+            scored_papers = await self.rank_papers_by_importance(
+                remaining_papers, trends=trend_info
+            )
+            llm_papers = await self.select_top_papers(scored_papers, llm_top_n)
 
-        return {
-            "trend_info": trend_info,
-            "papers": highlighted_papers,
-            "total_papers": len(papers),
-        }
+            # 両セクションにハイライト生成
+            hf_count = len(hf_papers)
+            all_selected = hf_papers + llm_papers
+            highlighted = await self.generate_paper_highlights(all_selected)
+            hf_papers = highlighted[:hf_count]
+            llm_papers = highlighted[hf_count:]
+
+            logger.info("ArXiv weekly digest processing completed (2-tier)")
+
+            return {
+                "trend_info": trend_info,
+                "papers": highlighted,
+                "total_papers": len(papers),
+                "hf_papers": hf_papers,
+                "llm_papers": llm_papers,
+            }
+
+        else:
+            # 従来のLLMのみフロー（後方互換）
+            scored_papers = await self.rank_papers_by_importance(
+                papers, trends=trend_info
+            )
+            top_papers = await self.select_top_papers(scored_papers, top_n)
+            highlighted_papers = await self.generate_paper_highlights(top_papers)
+
+            logger.info("ArXiv weekly digest processing completed")
+
+            return {
+                "trend_info": trend_info,
+                "papers": highlighted_papers,
+                "total_papers": len(papers),
+                "hf_papers": [],
+                "llm_papers": [],
+            }

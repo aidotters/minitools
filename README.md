@@ -34,7 +34,8 @@ minitools/
 │   ├── readers/           # データ読み取りモジュール
 │   │   └── notion.py      # Notionデータベース読み取り
 │   ├── researchers/       # リサーチモジュール
-│   │   └── trend.py       # Tavilyトレンド調査
+│   │   ├── trend.py       # Tavilyトレンド調査
+│   │   └── hf_papers.py   # HuggingFace Papers API連携
 │   ├── scrapers/          # Webスクレイピングモジュール
 │   │   ├── medium_scraper.py    # Playwright記事取得
 │   │   └── markdown_converter.py  # HTML→Markdown変換
@@ -406,7 +407,7 @@ uv run google-alert-weekly-digest --no-deduplicate
 
 #### ArXiv週次ダイジェスト
 ```bash
-# 過去7日間の上位10論文をSlackに送信
+# 過去7日間の論文をSlackに送信（2層構成: HF upvotes + LLMスコア）
 arxiv-weekly
 # または
 uv run arxiv-weekly --days 7 --top 10
@@ -417,8 +418,8 @@ uv run arxiv-weekly --dry-run
 # Tavilyトレンド調査をスキップ
 uv run arxiv-weekly --no-trends
 
-# OpenAIを使用してスコアリング
-uv run arxiv-weekly --provider openai
+# Gemini APIを使用してスコアリング
+uv run arxiv-weekly --provider gemini
 ```
 
 #### YouTube要約
@@ -580,21 +581,27 @@ NotionのGoogle Alertsデータベースから過去1週間の記事を取得し
 
 ### ArXiv週次ダイジェスト
 
-NotionのArXivデータベースから過去1週間の論文を取得し、AIが重要度を判定して上位論文を選出。週のトレンド総括と各論文の要約をSlackに送信します。
+NotionのArXivデータベースから過去1週間の論文を取得し、2層構成で上位論文を選出。週のトレンド総括と各論文の要約をSlackに送信します。
 
 **特徴**:
+- **2層構成ランキング**: HuggingFace upvotes（客観的指標）+ LLMスコアリング（主観的評価）
+- **セクション1**: HF upvote上位の注目論文（再現性のあるランキング）
+- **セクション2**: LLMが注目する論文（セクション1除外、隠れた良論文の発見）
 - Tavilyを使用した最新AIトレンドの調査
-- トレンドに基づく論文の重要度スコアリング
 - **バッチスコアリング**: 20件を1回のLLM呼び出しで処理し、高速化
-- LLMによる多角的評価（技術的影響、実用性、革新性等）
+- HF統計取得とトレンド調査の並列実行で効率化
 - **デフォルトでOpenAI API使用**（高速バッチ処理のため）
 
 **オプション**:
 - `--days`: 集計対象の日数（デフォルト: 7）
-- `--top`: 上位論文数（デフォルト: 10）
+- `--top`: 上位論文数（デフォルト: 10、HF未使用時のフォールバック）
 - `--dry-run`: プレビューモード（Slackに送信しない）
 - `--no-trends`: Tavilyトレンド調査をスキップ
-- `--provider`: LLMプロバイダーの選択（デフォルト: openai）
+- `--provider`: LLMプロバイダーの選択（ollama/openai/gemini、デフォルト: openai）
+
+**設定項目** (`settings.yaml`):
+- `defaults.arxiv_weekly.hf_top_n`: HFセクションの件数（デフォルト: 5）
+- `defaults.arxiv_weekly.llm_top_n`: LLMセクションの件数（デフォルト: 5）
 
 **定期実行の設定例（cron）**:
 ```bash
