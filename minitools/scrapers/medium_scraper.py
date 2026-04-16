@@ -32,6 +32,51 @@ DEFAULT_CHROME_PROFILE = Path.home() / ".minitools" / "chrome-profile"
 CDP_PORT = 9222
 
 
+def _patch_playwright_cdp_download_behavior() -> None:
+    """Playwright 1.49+のCDP接続時Browser.setDownloadBehaviorエラーを回避する。
+
+    新しいChromeではBrowser.setDownloadBehaviorがサポートされなくなったが、
+    PlaywrightのJSドライバーがCDP接続時にこれを無条件に呼び出すため、
+    .catch(()=>{}) を追加してエラーを無視させる。
+    """
+    try:
+        import playwright
+
+        cr_browser_js = (
+            Path(playwright.__file__).parent
+            / "driver"
+            / "package"
+            / "lib"
+            / "server"
+            / "chromium"
+            / "crBrowser.js"
+        )
+        if not cr_browser_js.exists():
+            return
+
+        content = cr_browser_js.read_text()
+
+        # 既にパッチ済みの場合はスキップ
+        if ".catch(() => {}))" in content:
+            return
+
+        # setDownloadBehaviorの呼び出しに.catch(()=>{})を追加
+        old = "eventsEnabled: true\n      }));"
+        new = "eventsEnabled: true\n      }).catch(() => {}));  // Patched: ignore unsupported CDP command"
+
+        if old in content:
+            cr_browser_js.write_text(content.replace(old, new))
+            logger.info(
+                "Patched Playwright crBrowser.js to handle setDownloadBehavior error"
+            )
+        else:
+            logger.debug(
+                "Playwright crBrowser.js patch target not found (may already be fixed upstream)"
+            )
+    except Exception as e:
+        logger.debug(f"Failed to patch Playwright crBrowser.js (non-critical): {e}")
+
+
 def _find_chrome_path() -> Optional[str]:
     """システムのChromeブラウザのパスを検出する"""
     if sys.platform == "darwin":
@@ -124,6 +169,10 @@ class MediumScraper:
             await self._prompt_login_before_cdp()
 
         # CDP接続
+        # Playwright 1.49+がBrowser.setDownloadBehaviorを送信し、
+        # 新しいChromeが拒否する問題を回避するためにJSドライバーをパッチする
+        _patch_playwright_cdp_download_behavior()
+
         logger.info(f"Connecting to Chrome via CDP (port {CDP_PORT})...")
         try:
             self._browser = await self._playwright.chromium.connect_over_cdp(

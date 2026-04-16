@@ -56,6 +56,44 @@ class TestFullTextTranslatorChunking:
         assert len(chunks) >= 2
 
 
+class TestDoNotTranslateMarker:
+    """DO NOT TRANSLATE マーカーのテスト"""
+
+    def test_split_with_marker(self):
+        """マーカーで正しく分割される"""
+        mock_llm = MockLLMClient()
+        translator = FullTextTranslator(llm_client=mock_llm)
+
+        md = "Body text\n\n<!-- DO NOT TRANSLATE -->\nReferences"
+        translatable, untranslatable = translator._split_by_do_not_translate(md)
+
+        assert translatable == "Body text"
+        assert "<!-- DO NOT TRANSLATE -->" in untranslatable
+        assert "References" in untranslatable
+
+    def test_split_without_marker(self):
+        """マーカーがない場合は全文がtranslatable"""
+        mock_llm = MockLLMClient()
+        translator = FullTextTranslator(llm_client=mock_llm)
+
+        md = "Full body text"
+        translatable, untranslatable = translator._split_by_do_not_translate(md)
+
+        assert translatable == "Full body text"
+        assert untranslatable == ""
+
+    def test_marker_at_beginning(self):
+        """マーカーが先頭にある場合"""
+        mock_llm = MockLLMClient()
+        translator = FullTextTranslator(llm_client=mock_llm)
+
+        md = "<!-- DO NOT TRANSLATE -->\nAll references"
+        translatable, untranslatable = translator._split_by_do_not_translate(md)
+
+        assert translatable == ""
+        assert "All references" in untranslatable
+
+
 class TestFullTextTranslatorTranslation:
     """翻訳実行のテスト"""
 
@@ -134,6 +172,35 @@ class TestFullTextTranslatorTranslation:
         result = await translator.translate("Test text")
         assert result == "成功した翻訳"
         assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_do_not_translate_marker_skips_rest(self):
+        """<!-- DO NOT TRANSLATE --> マーカー以降は翻訳されない"""
+        mock_llm = MockLLMClient(chat_response="翻訳済み本文")
+        translator = FullTextTranslator(llm_client=mock_llm)
+
+        md = (
+            "# Introduction\n\nSome text.\n\n"
+            "<!-- DO NOT TRANSLATE -->\n"
+            "# References\n\n[1] Author et al. Paper title."
+        )
+        result = await translator.translate(md)
+
+        assert "翻訳済み本文" in result
+        assert "<!-- DO NOT TRANSLATE -->" in result
+        assert "[1] Author et al. Paper title." in result
+        # LLMに渡されたプロンプトにReferencesが含まれていないことを確認
+        prompt_content = mock_llm.chat_calls[0]["messages"][0]["content"]
+        assert "References" not in prompt_content
+
+    @pytest.mark.asyncio
+    async def test_no_do_not_translate_marker(self):
+        """マーカーがない場合は全文が翻訳される"""
+        mock_llm = MockLLMClient(chat_response="全文翻訳")
+        translator = FullTextTranslator(llm_client=mock_llm)
+
+        result = await translator.translate("Full text to translate")
+        assert result == "全文翻訳"
 
     @pytest.mark.asyncio
     async def test_all_retries_exhausted_returns_original(self):

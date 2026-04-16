@@ -64,8 +64,18 @@ class NotionBlockBuilder:
             # 画像
             image_match = re.match(r"^!\[([^\]]*)\]\(([^)]+)\)$", line.strip())
             if image_match:
+                caption = image_match.group(1)
                 url = image_match.group(2)
-                blocks.append(self._build_image_block(url))
+                if url.startswith(("http://", "https://")):
+                    blocks.append(self._build_image_block(url))
+                else:
+                    # 相対パスやローカルパスの画像はキャプション段落に変換
+                    if caption:
+                        blocks.append(
+                            self._build_paragraph_block(f"*[Image: {caption}]*")
+                        )
+                    else:
+                        logger.debug(f"Skipping non-URL image: {url}")
                 i += 1
                 continue
 

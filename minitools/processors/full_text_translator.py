@@ -29,7 +29,8 @@ TRANSLATION_PROMPT = """あなたはプロの翻訳者です。以下のMarkdown
 3. **インラインコード非翻訳**: `バッククォート`で囲まれたインラインコードは翻訳しないでください。
 4. **画像リンク非翻訳**: ![alt](url) 形式の画像リンクはそのまま維持してください。
 5. **URL非翻訳**: URLはそのまま維持してください。
-6. **自然な日本語**: 技術的に正確で、自然な日本語にしてください。
+6. **数式非翻訳**: インライン数式 `$...$` およびブロック数式 `$$...$$` は翻訳せず、LaTeX形式のまま維持してください。
+7. **自然な日本語**: 技術的に正確で、自然な日本語にしてください。
 
 ## 翻訳対象テキスト
 
@@ -83,6 +84,9 @@ class FullTextTranslator:
         """
         Markdown全文を日本語に翻訳する
 
+        ``<!-- DO NOT TRANSLATE -->`` マーカーが含まれる場合、
+        マーカー以降のテキスト（参考文献等）は翻訳せずそのまま保持する。
+
         Args:
             markdown: 翻訳対象のMarkdown文字列
 
@@ -92,8 +96,20 @@ class FullTextTranslator:
         if not markdown or not markdown.strip():
             return ""
 
-        chunks = self._split_into_chunks(markdown)
+        # <!-- DO NOT TRANSLATE --> マーカーで分割
+        translatable, untranslatable = self._split_by_do_not_translate(markdown)
+
+        if not translatable.strip():
+            logger.info("No translatable content (all after DO NOT TRANSLATE marker)")
+            return untranslatable
+
+        chunks = self._split_into_chunks(translatable)
         logger.info(f"Translating {len(chunks)} chunk(s)")
+        if untranslatable:
+            logger.info(
+                f"Skipping translation for {len(untranslatable)} chars "
+                f"after DO NOT TRANSLATE marker"
+            )
 
         translated_chunks: List[str] = []
         for i, chunk in enumerate(chunks):
@@ -103,7 +119,29 @@ class FullTextTranslator:
             translated = await self._translate_chunk(chunk)
             translated_chunks.append(translated)
 
-        return "\n\n".join(translated_chunks)
+        result = "\n\n".join(translated_chunks)
+        if untranslatable:
+            result = result + "\n\n" + untranslatable
+        return result
+
+    def _split_by_do_not_translate(self, markdown: str) -> tuple[str, str]:
+        """
+        ``<!-- DO NOT TRANSLATE -->`` マーカーでテキストを分割する
+
+        Args:
+            markdown: 分割対象のMarkdown文字列
+
+        Returns:
+            (翻訳対象テキスト, 翻訳対象外テキスト) のタプル。
+            マーカーがない場合は (全文, "") を返す。
+        """
+        marker = "<!-- DO NOT TRANSLATE -->"
+        idx = markdown.find(marker)
+        if idx == -1:
+            return markdown, ""
+        translatable = markdown[:idx].rstrip()
+        untranslatable = markdown[idx:]
+        return translatable, untranslatable
 
     def _split_into_chunks(self, markdown: str) -> List[str]:
         """
