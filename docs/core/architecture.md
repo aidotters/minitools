@@ -48,6 +48,7 @@ flowchart TB
         TR["Translator"]
         SU["Summarizer"]
         FTT["FullTextTranslator"]
+        VPR["VlmParseRepairer"]
         WDP["WeeklyDigestProcessor"]
         AWP["ArxivWeeklyProcessor"]
         XTP["XTrendProcessor"]

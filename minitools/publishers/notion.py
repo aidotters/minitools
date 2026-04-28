@@ -4,7 +4,11 @@ Notion publisher module for saving content to Notion databases.
 
 import os
 import asyncio
+import mimetypes
+from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional, cast
+
+import httpx
 from notion_client import Client
 
 from minitools.utils.logger import get_logger
@@ -699,6 +703,98 @@ class NotionPublisher:
         except Exception as e:
             logger.error(f"Error appending blocks to page {page_id}: {e}")
             return False
+
+    async def upload_file(
+        self, file_path: Path, mime_type: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        画像ファイルをNotion File Upload APIにアップロードし、file_upload_idを返す
+
+        2 段階の API 呼び出し:
+          1. POST /v1/file_uploads で upload_url を取得
+          2. 取得した upload_url に multipart/form-data で画像を送信
+
+        Args:
+            file_path: アップロードする画像ファイルのパス
+            mime_type: MIMEタイプ（指定しない場合は mimetypes から推定）
+
+        Returns:
+            file_upload_id (UUID文字列)。失敗時はNone。
+        """
+        if not file_path.exists():
+            logger.warning(f"Image file not found: {file_path}")
+            return None
+
+        size = file_path.stat().st_size
+        if size > 5 * 1024 * 1024:
+            logger.warning(
+                f"Image exceeds 5MB limit, skipping: {file_path.name} ({size} bytes)"
+            )
+            return None
+
+        if mime_type is None:
+            guessed, _ = mimetypes.guess_type(file_path.name)
+            mime_type = guessed or "application/octet-stream"
+
+        # ステップ1: file_uploads.create
+        try:
+            create_resp = await self._retry_api_call(
+                lambda: self.client.request(
+                    path="file_uploads",
+                    method="POST",
+                    body={
+                        "mode": "single_part",
+                        "filename": file_path.name,
+                        "content_type": mime_type,
+                    },
+                ),
+                description=f"file_uploads.create({file_path.name})",
+            )
+        except Exception as e:
+            logger.warning(f"file_uploads.create failed for {file_path.name}: {e}")
+            return None
+
+        if not create_resp or not isinstance(create_resp, dict):
+            logger.warning(f"Invalid file_uploads response for {file_path.name}")
+            return None
+
+        upload_id = create_resp.get("id")
+        upload_url = create_resp.get("upload_url")
+        if not upload_id or not upload_url:
+            logger.warning(f"Missing id/upload_url in response for {file_path.name}")
+            return None
+
+        # ステップ2: multipart POST でバイナリ送信（3回リトライ、指数バックオフ）
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Notion-Version": "2022-06-28",
+        }
+
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    with open(file_path, "rb") as fp:
+                        files = {"file": (file_path.name, fp, mime_type)}
+                        resp = await client.post(
+                            upload_url, headers=headers, files=files
+                        )
+                    resp.raise_for_status()
+                logger.info(f"Uploaded image: {file_path.name} -> {upload_id}")
+                return cast(str, upload_id)
+            except Exception as e:
+                delay = 2 ** (attempt + 1)
+                if attempt < 2:
+                    logger.warning(
+                        f"Upload failed (attempt {attempt + 1}/3) for "
+                        f"{file_path.name}: {e}, retrying in {delay}s..."
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.warning(
+                        f"Upload failed after 3 attempts for {file_path.name}: {e}"
+                    )
+
+        return None
 
     async def _batch_append_blocks(
         self, page_id: str, blocks: List[Dict[str, Any]], batch_size: int = 100

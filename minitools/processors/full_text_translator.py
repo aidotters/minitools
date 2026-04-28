@@ -29,7 +29,14 @@ TRANSLATION_PROMPT = """あなたはプロの翻訳者です。以下のMarkdown
 3. **インラインコード非翻訳**: `バッククォート`で囲まれたインラインコードは翻訳しないでください。
 4. **画像リンク非翻訳**: ![alt](url) 形式の画像リンクはそのまま維持してください。
 5. **URL非翻訳**: URLはそのまま維持してください。
-6. **自然な日本語**: 技術的に正確で、自然な日本語にしてください。
+6. **数式非翻訳**: インライン数式 `$...$` およびブロック数式 `$$...$$` は翻訳せず、LaTeX形式のまま維持してください。
+7. **文体統一**: 文末表現は「である調（常体）」で統一してください。「ですます調（敬体）」と混在させないでください。技術記事・論文として自然な常体で記述してください。
+8. **自然な日本語**: 技術的に正確で、自然な日本語にしてください。
+9. **テーブル構造維持**: `|` 区切りのMarkdownテーブルは行・列構造を維持し、ヘッダー・セル内容のみ翻訳してください。区切り行（`|---|---|` 等）はそのまま変更せず、セル数・改行位置も崩さないでください。
+10. **PDFハイフン分割の修復**: 行末がハイフン `-` で終わり、次行先頭に単語の続きがある場合（例: `evalu-` 改行 `ation`）、それは PDF の自動ハイフネーションです。1 単語に連結してから翻訳してください。連結後の行頭が `-` や数字 `1.` で始まっても、それを箇条書き記号として再出力しないでください。
+11. **コードフェンスで包まない**: 出力全体を ```` ```markdown ```` や ```` ``` ```` で囲まないでください。原文に存在するコードブロック以外、新たな ```` ``` ```` を追加してはいけません。
+12. **原文を残さない**: 英語原文をそのまま残してから日本語訳を併記しないでください。出力は日本語訳のみです（コード・URL・引用記号など非翻訳要素を除く）。
+13. **見出しも翻訳**: `#`/`##`/`###` で始まる見出し行も日本語に翻訳してください。原文をそのまま残してはいけません。
 
 ## 翻訳対象テキスト
 
@@ -83,6 +90,9 @@ class FullTextTranslator:
         """
         Markdown全文を日本語に翻訳する
 
+        ``<!-- DO NOT TRANSLATE -->`` マーカーが含まれる場合、
+        マーカー以降のテキスト（参考文献等）は翻訳せずそのまま保持する。
+
         Args:
             markdown: 翻訳対象のMarkdown文字列
 
@@ -92,8 +102,20 @@ class FullTextTranslator:
         if not markdown or not markdown.strip():
             return ""
 
-        chunks = self._split_into_chunks(markdown)
+        # <!-- DO NOT TRANSLATE --> マーカーで分割
+        translatable, untranslatable = self._split_by_do_not_translate(markdown)
+
+        if not translatable.strip():
+            logger.info("No translatable content (all after DO NOT TRANSLATE marker)")
+            return untranslatable
+
+        chunks = self._split_into_chunks(translatable)
         logger.info(f"Translating {len(chunks)} chunk(s)")
+        if untranslatable:
+            logger.info(
+                f"Skipping translation for {len(untranslatable)} chars "
+                f"after DO NOT TRANSLATE marker"
+            )
 
         translated_chunks: List[str] = []
         for i, chunk in enumerate(chunks):
@@ -103,7 +125,29 @@ class FullTextTranslator:
             translated = await self._translate_chunk(chunk)
             translated_chunks.append(translated)
 
-        return "\n\n".join(translated_chunks)
+        result = "\n\n".join(translated_chunks)
+        if untranslatable:
+            result = result + "\n\n" + untranslatable
+        return result
+
+    def _split_by_do_not_translate(self, markdown: str) -> tuple[str, str]:
+        """
+        ``<!-- DO NOT TRANSLATE -->`` マーカーでテキストを分割する
+
+        Args:
+            markdown: 分割対象のMarkdown文字列
+
+        Returns:
+            (翻訳対象テキスト, 翻訳対象外テキスト) のタプル。
+            マーカーがない場合は (全文, "") を返す。
+        """
+        marker = "<!-- DO NOT TRANSLATE -->"
+        idx = markdown.find(marker)
+        if idx == -1:
+            return markdown, ""
+        translatable = markdown[:idx].rstrip()
+        untranslatable = markdown[idx:]
+        return translatable, untranslatable
 
     def _split_into_chunks(self, markdown: str) -> List[str]:
         """
@@ -171,13 +215,16 @@ class FullTextTranslator:
         """
         chunk_sizeを超えるセクションを段落（空行）単位で分割する
 
+        `|` で始まる連続行群（Markdownテーブル）は途中で分割されないよう、
+        1段落として結合してから段落分割を行う。
+
         Args:
             section: 分割対象のセクション文字列
 
         Returns:
             分割されたセクションのリスト
         """
-        paragraphs = re.split(r"\n\n+", section)
+        paragraphs = self._merge_table_blocks(re.split(r"\n\n+", section))
 
         chunks: List[str] = []
         current: List[str] = []
@@ -198,6 +245,62 @@ class FullTextTranslator:
             chunks.append("\n\n".join(current))
 
         return chunks
+
+    @staticmethod
+    def _merge_table_blocks(paragraphs: List[str]) -> List[str]:
+        """
+        `|` で始まる連続する段落群を 1 段落として結合する
+
+        Markdownテーブルが空行なしで途中改行される場合、段落分割でテーブルが
+        途中で切れないようにする。
+        """
+
+        def is_table_para(p: str) -> bool:
+            lines = p.strip().split("\n")
+            if not lines:
+                return False
+            # 全行が | で始まるか
+            return all(line.lstrip().startswith("|") for line in lines)
+
+        merged: List[str] = []
+        buffer: List[str] = []
+        for para in paragraphs:
+            if is_table_para(para):
+                buffer.append(para)
+            else:
+                if buffer:
+                    merged.append("\n".join(buffer))
+                    buffer = []
+                merged.append(para)
+        if buffer:
+            merged.append("\n".join(buffer))
+        return merged
+
+    @staticmethod
+    def _unwrap_outer_code_fence(text: str) -> str:
+        """LLM が出力全体を ```markdown ... ``` で包んでしまった場合に外側を剥がす
+
+        マッチ条件: 先頭行が ``` で始まり末尾行が ``` の場合のみ。
+        言語指定（```markdown など）も許容。内側に独立した ``` が複数ある場合は
+        誤剥離を避けるためそのまま返す。
+        """
+        if not text:
+            return text
+        stripped = text.strip()
+        if not stripped.startswith("```") or not stripped.endswith("```"):
+            return text
+        lines = stripped.split("\n")
+        if len(lines) < 2:
+            return text
+        if not lines[-1].strip() == "```":
+            return text
+        # 内側に追加の ``` が無い、または開始/終了の対だけのケースに限定
+        inner = lines[1:-1]
+        fence_count = sum(1 for ln in inner if ln.strip().startswith("```"))
+        if fence_count > 0:
+            # 内側に独立コードブロックが含まれる可能性 → そのまま返す
+            return text
+        return "\n".join(inner)
 
     def _is_likely_truncated(self, original: str, translated: str) -> bool:
         """
@@ -244,7 +347,7 @@ class FullTextTranslator:
                     messages=[{"role": "user", "content": prompt}],
                     model=self.model,
                 )
-                translated = result.strip()
+                translated = self._unwrap_outer_code_fence(result.strip())
                 if not translated:
                     logger.warning(f"Empty translation result (attempt {attempt + 1})")
                     continue

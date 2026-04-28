@@ -4,7 +4,7 @@ Converts translated Markdown into Notion API block format.
 """
 
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from minitools.utils.logger import get_logger
 
@@ -17,18 +17,29 @@ NOTION_TEXT_LIMIT = 2000
 class NotionBlockBuilder:
     """翻訳済みMarkdownをNotionブロック形式に変換するクラス"""
 
-    def build_blocks(self, markdown: str) -> List[Dict[str, Any]]:
+    def build_blocks(
+        self,
+        markdown: str,
+        image_uploads: Optional[Dict[str, str]] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Markdown文字列をNotionブロックのリストに変換する
 
         Args:
             markdown: 翻訳済みのMarkdown文字列
+            image_uploads: ローカル画像ファイル名→file_upload_id のマッピング。
+                Noneまたは空辞書の場合、ローカル画像はキャプション段落にフォールバック。
 
         Returns:
             Notionブロック形式の辞書のリスト
         """
         if not markdown or not markdown.strip():
             return []
+
+        # 前処理: 不要な HTML タグ（pseudo-anchor 等）を除去
+        markdown = self._strip_inline_html(markdown)
+        # LLM が誤って ```markdown ... ``` で囲んだ翻訳結果を除去
+        markdown = self._unwrap_translation_code_fences(markdown)
 
         blocks: List[Dict[str, Any]] = []
 
@@ -46,10 +57,27 @@ class NotionBlockBuilder:
                 i += 1
                 continue
 
+            # ブロック数式 $$...$$
+            stripped = line.strip()
+            if stripped.startswith("$$"):
+                eq_blocks, i = self._parse_block_equation(lines, i)
+                blocks.extend(eq_blocks)
+                continue
+
             # コードブロック
-            if line.strip().startswith("```"):
+            if stripped.startswith("```"):
                 code_blocks, i = self._parse_code_block(lines, i)
                 blocks.extend(code_blocks)
+                continue
+
+            # テーブル（次行が |---|---| 形式）
+            if (
+                line.lstrip().startswith("|")
+                and i + 1 < len(lines)
+                and self._is_table_separator(lines[i + 1])
+            ):
+                table_block, i = self._parse_table(lines, i)
+                blocks.append(table_block)
                 continue
 
             # 見出し
@@ -64,21 +92,45 @@ class NotionBlockBuilder:
             # 画像
             image_match = re.match(r"^!\[([^\]]*)\]\(([^)]+)\)$", line.strip())
             if image_match:
+                caption = image_match.group(1)
                 url = image_match.group(2)
-                blocks.append(self._build_image_block(url))
+                if url.startswith(("http://", "https://")):
+                    blocks.append(self._build_image_block(url=url, caption=caption))
+                elif image_uploads and url in image_uploads:
+                    # ローカル画像でfile_upload_idが用意されている
+                    blocks.append(
+                        self._build_image_block(
+                            file_upload_id=image_uploads[url], caption=caption
+                        )
+                    )
+                else:
+                    # マッピング無しの場合はキャプション段落にフォールバック
+                    if caption:
+                        blocks.append(
+                            self._build_paragraph_block(f"*[Image: {caption}]*")
+                        )
+                    else:
+                        logger.debug(f"Skipping non-URL image: {url}")
                 i += 1
                 continue
 
-            # 箇条書きリスト
-            bullet_match = re.match(r"^[-*]\s+(.+)$", line)
+            # 箇条書きリスト（- * • のいずれか、インデント許容）
+            bullet_match = re.match(r"^\s*[-*•]\s+(.+)$", line)
             if bullet_match:
                 text = bullet_match.group(1)
-                blocks.append(self._build_list_block(text, ordered=False))
+                # `- 1. xxx` のような bullet+番号の混在は番号付きリストへ再分類
+                renumbered = re.match(r"^(\d+)\.\s+(.+)$", text)
+                if renumbered:
+                    blocks.append(
+                        self._build_list_block(renumbered.group(2), ordered=True)
+                    )
+                else:
+                    blocks.append(self._build_list_block(text, ordered=False))
                 i += 1
                 continue
 
             # 番号付きリスト
-            numbered_match = re.match(r"^\d+\.\s+(.+)$", line)
+            numbered_match = re.match(r"^\s*\d+\.\s+(.+)$", line)
             if numbered_match:
                 text = numbered_match.group(1)
                 blocks.append(self._build_list_block(text, ordered=True))
@@ -172,20 +224,225 @@ class NotionBlockBuilder:
 
         return blocks, i
 
+    def _parse_block_equation(
+        self, lines: List[str], start: int
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """
+        ブロック数式 $$...$$ を解析する
+
+        1 行内で閉じた `$$...$$` と複数行にまたがる `$$...$$` の両方に対応する。
+
+        Args:
+            lines: 全行のリスト
+            start: ブロック数式開始行のインデックス
+
+        Returns:
+            (Notion equation blockを含むリスト, 次の行のインデックス)
+        """
+        first_line = lines[start].strip()
+
+        # 1行内で閉じているパターン: $$...$$
+        if first_line.count("$$") >= 2:
+            # 最初の $$ と最後の $$ で切り出す
+            inner = first_line[2:]
+            end_idx = inner.rfind("$$")
+            if end_idx >= 0:
+                expression = inner[:end_idx].strip()
+                if not expression:
+                    # 空 expression（$$$$ や $$ $$ 等）は paragraph フォールバック
+                    return [self._build_paragraph_block(first_line)], start + 1
+                return [self._build_equation_block(expression)], start + 1
+
+        # 複数行パターン: $$ から始まり、後続の $$ で閉じる
+        # 最初の行に $$ 以降の内容があればそれも含める
+        expr_lines: List[str] = []
+        first_content = first_line[2:].strip()
+        if first_content:
+            expr_lines.append(first_content)
+
+        i = start + 1
+        closed = False
+        while i < len(lines):
+            current = lines[i]
+            if "$$" in current:
+                # 終端 $$ が見つかった
+                end_idx = current.find("$$")
+                before = current[:end_idx].rstrip()
+                if before:
+                    expr_lines.append(before)
+                i += 1
+                closed = True
+                break
+            expr_lines.append(current)
+            i += 1
+
+        if not closed:
+            # 閉じタグが見つからない場合は段落フォールバック
+            logger.warning("Unclosed block equation, treating as paragraph")
+            return [self._build_paragraph_block(lines[start])], start + 1
+
+        expression = "\n".join(expr_lines).strip()
+        if not expression:
+            # 空 expression は paragraph フォールバック
+            return [self._build_paragraph_block(lines[start])], start + 1
+        return [self._build_equation_block(expression)], i
+
+    def _is_table_separator(self, line: str) -> bool:
+        """|---|---| 形式の区切り行かチェックする"""
+        stripped = line.strip()
+        if not stripped.startswith("|") or not stripped.endswith("|"):
+            return False
+        # 内側のセル群が - や : のみで構成されているか
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if not cells:
+            return False
+        return all(re.fullmatch(r":?-+:?", c) for c in cells if c)
+
+    def _parse_table_row(self, line: str) -> List[str]:
+        """`| a | b | c |` 形式の行からセル文字列のリストを抽出する"""
+        stripped = line.strip()
+        # 先頭・末尾の | を除去
+        if stripped.startswith("|"):
+            stripped = stripped[1:]
+        if stripped.endswith("|"):
+            stripped = stripped[:-1]
+        return [c.strip() for c in stripped.split("|")]
+
+    def _parse_table(self, lines: List[str], start: int) -> tuple[Dict[str, Any], int]:
+        """
+        Markdownテーブルを解析する
+
+        start 行目がヘッダー行、start+1 行目が区切り行、start+2 以降がデータ行。
+        データ行が全て空セルしか持たない（caption-only テーブル等）の場合は
+        段落フォールバックを返す。
+
+        Args:
+            lines: 全行のリスト
+            start: テーブル開始行（ヘッダー行）のインデックス
+
+        Returns:
+            (Notion block, 次の行のインデックス)
+        """
+        header_cells = self._parse_table_row(lines[start])
+        # 区切り行をスキップ
+        i = start + 2
+
+        data_rows: List[List[str]] = []
+        while i < len(lines):
+            line = lines[i]
+            if not line.lstrip().startswith("|"):
+                break
+            # 区切り行はスキップ（誤検出防止）
+            if self._is_table_separator(line):
+                i += 1
+                continue
+            row = self._parse_table_row(line)
+            # 全セルが空の行はスキップ（PDF 抽出時のダミー行）
+            if any(cell.strip() for cell in row):
+                data_rows.append(row)
+            i += 1
+
+        # データ行が無く、ヘッダーも実質1セルしか中身がない場合は
+        # caption とみなして段落へフォールバック
+        non_empty_header = [c for c in header_cells if c.strip()]
+        if not data_rows and len(non_empty_header) <= 1:
+            text = " ".join(non_empty_header).strip()
+            if text:
+                return self._build_paragraph_block(text), i
+            # 完全に空のテーブルは divider にフォールバック
+            return self._build_divider_block(), i
+
+        return self._build_table_block(header_cells, data_rows), i
+
+    # テーブルセル内の <br> 系タグ（Notion rich_text は改行を \n で表す）
+    _CELL_BR_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
+
+    @classmethod
+    def _normalize_cell(cls, cell: str) -> str:
+        """セル文字列内の <br> を改行に置換する"""
+        return cls._CELL_BR_PATTERN.sub("\n", cell)
+
+    def _build_cell_rich_text(self, cell: str) -> List[Dict[str, Any]]:
+        """セル文字列を rich_text に変換する（<br> を改行として扱う）"""
+        normalized = self._normalize_cell(cell)
+        if "\n" not in normalized:
+            return self._build_rich_text(normalized)
+
+        parts: List[Dict[str, Any]] = []
+        segments = normalized.split("\n")
+        for idx, seg in enumerate(segments):
+            if seg:
+                parts.extend(self._build_rich_text(seg))
+            if idx < len(segments) - 1:
+                parts.append({"type": "text", "text": {"content": "\n"}})
+        if not parts:
+            parts.append({"type": "text", "text": {"content": ""}})
+        return parts
+
+    def _build_table_block(
+        self, header_cells: List[str], data_rows: List[List[str]]
+    ) -> Dict[str, Any]:
+        """Notion table block を生成する"""
+        width = len(header_cells)
+
+        def _cells_to_rich_text(cells: List[str]) -> List[List[Dict[str, Any]]]:
+            # セル数が不足している場合はヘッダー幅に合わせて padding
+            padded = list(cells) + [""] * (width - len(cells))
+            padded = padded[:width]
+            return [self._build_cell_rich_text(c) for c in padded]
+
+        children: List[Dict[str, Any]] = []
+        children.append(
+            {
+                "object": "block",
+                "type": "table_row",
+                "table_row": {"cells": _cells_to_rich_text(header_cells)},
+            }
+        )
+        for row in data_rows:
+            children.append(
+                {
+                    "object": "block",
+                    "type": "table_row",
+                    "table_row": {"cells": _cells_to_rich_text(row)},
+                }
+            )
+
+        return {
+            "object": "block",
+            "type": "table",
+            "table": {
+                "table_width": width,
+                "has_column_header": True,
+                "has_row_header": False,
+                "children": children,
+            },
+        }
+
+    def _build_equation_block(self, expression: str) -> Dict[str, Any]:
+        """ブロック数式を生成"""
+        return {
+            "object": "block",
+            "type": "equation",
+            "equation": {"expression": expression},
+        }
+
     # Markdownインライン書式のパターン
+    # 順序重要: inline code → link → equation → bold → italic
     _INLINE_PATTERN = re.compile(
-        r"`([^`]+)`"  # inline code: `text`
-        r"|\[([^\]]+)\]\(([^)]+)\)"  # link: [text](url)
-        r"|\*\*(.+?)\*\*"  # bold: **text**
-        r"|(?<!\*)\*([^*]+?)\*(?!\*)"  # italic: *text* (not inside bold)
+        r"`([^`]+)`"  # group 1: inline code
+        r"|\[([^\]]+)\]\(([^)]+)\)"  # groups 2,3: link
+        r"|(?<!\\)\$([^$\n]+?)(?<!\\)\$"  # group 4: inline equation
+        r"|\*\*(.+?)\*\*"  # group 5: bold
+        r"|(?<!\*)\*([^*]+?)\*(?!\*)"  # group 6: italic
     )
 
     def _build_rich_text(self, text: str) -> List[Dict[str, Any]]:
         """
         テキストからNotionのrich_textオブジェクトを構築する
 
-        Markdownのインライン書式（太字、斜体、インラインコード、リンク）を
-        Notionのrich_text annotations/link形式に変換する。
+        Markdownのインライン書式（太字、斜体、インラインコード、リンク、数式）を
+        Notionのrich_text annotations/link/equation形式に変換する。
         テキストが2000文字を超える場合は複数のrich_textに分割する。
 
         Args:
@@ -197,6 +454,12 @@ class NotionBlockBuilder:
         if not text:
             return [{"type": "text", "text": {"content": ""}}]
 
+        # インライン処理の前に、bold 内の数式を先に展開する
+        # **$x$** のようなケースで bold と equation の両立は Notion rich_text の
+        # 単一 annotation モデル上困難。本実装では数式優先で扱う
+        # （bold 記号を外した上で equation に変換）
+        text = self._unwrap_bold_around_equation(text)
+
         parts: List[Dict[str, Any]] = []
         pos = 0
 
@@ -204,7 +467,7 @@ class NotionBlockBuilder:
             # マッチ前のプレーンテキストを追加
             if match.start() > pos:
                 plain = text[pos : match.start()]
-                parts.extend(self._build_plain_rich_text(plain))
+                parts.extend(self._build_plain_rich_text(self._unescape_dollar(plain)))
 
             if match.group(1) is not None:
                 # inline code: `text`
@@ -232,20 +495,28 @@ class NotionBlockBuilder:
                     # 不正なURL（相対パス、アンカー等）はプレーンテキストにフォールバック
                     parts.extend(self._build_plain_rich_text(match.group(2)))
             elif match.group(4) is not None:
+                # inline equation: $expr$
+                parts.append(
+                    {
+                        "type": "equation",
+                        "equation": {"expression": match.group(4)},
+                    }
+                )
+            elif match.group(5) is not None:
                 # bold: **text**
                 parts.append(
                     {
                         "type": "text",
-                        "text": {"content": match.group(4)},
+                        "text": {"content": match.group(5)},
                         "annotations": {"bold": True},
                     }
                 )
-            elif match.group(5) is not None:
+            elif match.group(6) is not None:
                 # italic: *text*
                 parts.append(
                     {
                         "type": "text",
-                        "text": {"content": match.group(5)},
+                        "text": {"content": match.group(6)},
                         "annotations": {"italic": True},
                     }
                 )
@@ -254,13 +525,62 @@ class NotionBlockBuilder:
 
         # 残りのプレーンテキストを追加
         if pos < len(text):
-            parts.extend(self._build_plain_rich_text(text[pos:]))
+            parts.extend(self._build_plain_rich_text(self._unescape_dollar(text[pos:])))
 
         # マッチがなかった場合はプレーンテキスト全体
         if not parts:
-            parts.extend(self._build_plain_rich_text(text))
+            parts.extend(self._build_plain_rich_text(self._unescape_dollar(text)))
 
         return parts
+
+    @staticmethod
+    def _unescape_dollar(text: str) -> str:
+        """エスケープされた \\$ を通常の $ に戻す"""
+        return text.replace("\\$", "$")
+
+    # 行内に出現するノイズ HTML タグ（marker-pdf が PDF アンカー等で残すもの）
+    _STRIP_HTML_PATTERN = re.compile(
+        r"<span\b[^>]*>.*?</span>"
+        r"|<sup\b[^>]*>.*?</sup>"
+        r"|<sub\b[^>]*>.*?</sub>"
+        r"|<a\b[^>]*>.*?</a>",
+        re.DOTALL,
+    )
+
+    @classmethod
+    def _strip_inline_html(cls, text: str) -> str:
+        """Notion で意味を持たない HTML タグ（pseudo-anchor 等）を除去する"""
+        return cls._STRIP_HTML_PATTERN.sub("", text)
+
+    # LLM が翻訳結果を ```markdown ... ``` で誤って包むケースの検出
+    # 言語識別子付きで開き、内側に Markdown 構造（見出し / テーブル / リスト）があり、
+    # 単独の ``` で閉じる場合のみマッチする
+    _TRANSLATION_FENCE_PATTERN = re.compile(
+        r"(?m)^```(?:markdown|md|MARKDOWN|MD)\s*\n"
+        r"(?P<body>(?:.*\n)*?)"
+        r"^```\s*$"
+    )
+
+    @classmethod
+    def _unwrap_translation_code_fences(cls, text: str) -> str:
+        """LLM が ```markdown ... ``` で包んだ翻訳結果ブロックを段落化する
+
+        ただし内側に独立した ``` が含まれる場合は誤剥離を避けてそのまま残す。
+        """
+
+        def _replace(match: re.Match) -> str:
+            body = match.group("body")
+            # 内側に独立 ``` が含まれていればコードブロックとして残す（誤剥離回避）
+            if re.search(r"(?m)^```", body):
+                return match.group(0)
+            return body
+
+        return cls._TRANSLATION_FENCE_PATTERN.sub(_replace, text)
+
+    @staticmethod
+    def _unwrap_bold_around_equation(text: str) -> str:
+        """**$...$** パターンを $...$ に展開する（数式優先）"""
+        return re.sub(r"\*\*(\$[^$\n]+?\$)\*\*", r"\1", text)
 
     def _build_plain_rich_text(self, text: str) -> List[Dict[str, Any]]:
         """
@@ -358,9 +678,35 @@ class NotionBlockBuilder:
             },
         }
 
-    def _build_image_block(self, url: str) -> Dict[str, Any]:
-        """画像ブロックを生成"""
-        return {
+    def _build_image_block(
+        self,
+        url: Optional[str] = None,
+        file_upload_id: Optional[str] = None,
+        caption: str = "",
+    ) -> Dict[str, Any]:
+        """画像ブロックを生成
+
+        Args:
+            url: 外部URL（http(s)://）
+            file_upload_id: Notion File Upload API のID
+            caption: 画像キャプション
+        """
+        caption_rich_text: List[Dict[str, Any]] = []
+        if caption:
+            caption_rich_text = [{"type": "text", "text": {"content": caption}}]
+
+        if file_upload_id:
+            return {
+                "object": "block",
+                "type": "image",
+                "image": {
+                    "type": "file_upload",
+                    "file_upload": {"id": file_upload_id},
+                    "caption": caption_rich_text,
+                },
+            }
+        # external URL
+        block: Dict[str, Any] = {
             "object": "block",
             "type": "image",
             "image": {
@@ -368,6 +714,9 @@ class NotionBlockBuilder:
                 "external": {"url": url},
             },
         }
+        if caption_rich_text:
+            block["image"]["caption"] = caption_rich_text
+        return block
 
     def _build_list_block(self, text: str, ordered: bool = False) -> Dict[str, Any]:
         """リストブロックを生成"""

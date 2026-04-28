@@ -89,6 +89,24 @@ class OllamaClient(BaseLLMClient):
         messages = [{"role": "user", "content": prompt}]
         return await self.chat(messages, model)
 
+    async def generate_from_images(
+        self,
+        prompt: str,
+        images: List[bytes],
+        mime_type: str = "image/png",
+        model: Optional[str] = None,
+    ) -> str:
+        """画像からテキスト生成（multimodal は未対応）
+
+        Ollama の multimodal モデル (llava 等) には未対応。
+        warning ログを出して空文字列を返す（graceful degradation）。
+        """
+        logger.warning(
+            "OllamaClient does not support multimodal generation in this build. "
+            "Falling back to empty response."
+        )
+        return ""
+
     async def chat_json(
         self,
         messages: List[Dict[str, str]],

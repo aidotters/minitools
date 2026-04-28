@@ -321,3 +321,258 @@ print("hello")
         """空Markdownの処理"""
         assert builder.build_blocks("") == []
         assert builder.build_blocks("   ") == []
+
+
+class TestNotionBlockBuilderBlockEquation:
+    """ブロック数式のテスト"""
+
+    def test_build_block_equation_single_line(self, builder):
+        """1行内の $$...$$ が equation block として生成される"""
+        md = "$$g = \\frac{x}{y} \\tag{1}$$"
+        blocks = builder.build_blocks(md)
+        eq = blocks[1]
+        assert eq["type"] == "equation"
+        assert eq["equation"]["expression"] == "g = \\frac{x}{y} \\tag{1}"
+
+    def test_build_block_equation_multi_line(self, builder):
+        """複数行に跨る $$...$$ が 1 つの equation block として生成される"""
+        md = "$$\ng = \\frac{x}{y}\n+ z\n$$"
+        blocks = builder.build_blocks(md)
+        eq = blocks[1]
+        assert eq["type"] == "equation"
+        assert "g = \\frac{x}{y}" in eq["equation"]["expression"]
+        assert "+ z" in eq["equation"]["expression"]
+
+    def test_block_equation_before_paragraph(self, builder):
+        """ブロック数式の後に段落が続く場合"""
+        md = "$$x = 1$$\n\nHello"
+        blocks = builder.build_blocks(md)
+        types = [b["type"] for b in blocks]
+        assert "equation" in types
+        assert "paragraph" in types
+
+    def test_build_block_equation_empty_expression(self, builder):
+        """空 expression（$$$$ や $$ $$）は equation ではなく paragraph として扱う"""
+        for md in ["$$$$", "$$ $$"]:
+            blocks = builder.build_blocks(md)
+            types = [b["type"] for b in blocks]
+            assert "equation" not in types, f"空 expression で equation 生成: {md!r}"
+            assert "paragraph" in types
+
+    def test_build_block_equation_empty_multiline(self, builder):
+        """複数行で空 expression（$$\\n$$）も paragraph フォールバック"""
+        md = "$$\n$$"
+        blocks = builder.build_blocks(md)
+        types = [b["type"] for b in blocks]
+        assert "equation" not in types
+        assert "paragraph" in types
+
+
+class TestNotionBlockBuilderInlineEquation:
+    """インライン数式のテスト"""
+
+    def test_build_inline_equation(self, builder):
+        """$...$ が rich_text の equation として変換される"""
+        rich_text = builder._build_rich_text("Check $\\checkmark$ symbol")
+        types = [rt.get("type") for rt in rich_text]
+        assert "equation" in types
+        eq = next(rt for rt in rich_text if rt.get("type") == "equation")
+        assert eq["equation"]["expression"] == "\\checkmark"
+
+    def test_build_inline_equation_in_bold(self, builder):
+        """**$x$** のように bold の内側にある数式が equation として処理される"""
+        rich_text = builder._build_rich_text("Value **$x$** appears")
+        # equation 型の rich_text が含まれる
+        types = [rt.get("type") for rt in rich_text]
+        assert "equation" in types
+
+    def test_build_inline_equation_escaped_dollar(self, builder):
+        """\\$100 のようにエスケープされた $ は通常文字として扱われる"""
+        rich_text = builder._build_rich_text("Price is \\$100 USD")
+        # equation にはならない
+        types = [rt.get("type") for rt in rich_text]
+        assert "equation" not in types
+
+
+class TestNotionBlockBuilderTable:
+    """テーブルのテスト"""
+
+    def test_build_table_basic(self, builder):
+        """基本的なヘッダー+データ行のテーブル"""
+        md = "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |"
+        blocks = builder.build_blocks(md)
+        table = blocks[1]
+        assert table["type"] == "table"
+        assert table["table"]["table_width"] == 2
+        assert table["table"]["has_column_header"] is True
+        children = table["table"]["children"]
+        # 1 header + 2 data = 3 rows
+        assert len(children) == 3
+        assert children[0]["type"] == "table_row"
+        assert children[0]["table_row"]["cells"][0][0]["text"]["content"] == "A"
+        assert children[1]["table_row"]["cells"][0][0]["text"]["content"] == "1"
+
+    def test_build_table_inline_equation_in_cell(self, builder):
+        """セル内の $\\checkmark$ が equation として表示される"""
+        md = "| Feature | Supported |\n|---|---|\n| foo | $\\checkmark$ |"
+        blocks = builder.build_blocks(md)
+        table = blocks[1]
+        data_row = table["table"]["children"][1]
+        cell = data_row["table_row"]["cells"][1]
+        types = [rt.get("type") for rt in cell]
+        assert "equation" in types
+
+    def test_build_table_padding_missing_cells(self, builder):
+        """行によってセル数が不足する場合、ヘッダー幅に合わせて padding される"""
+        md = "| A | B | C |\n|---|---|---|\n| 1 | 2 |"
+        blocks = builder.build_blocks(md)
+        table = blocks[1]
+        assert table["table"]["table_width"] == 3
+        data_row = table["table"]["children"][1]
+        cells = data_row["table_row"]["cells"]
+        assert len(cells) == 3
+
+
+class TestNotionBlockBuilderImageUploads:
+    """画像アップロードマッピングのテスト"""
+
+    def test_build_image_with_upload_mapping(self, builder):
+        """image_uploads マッピングで file_upload 型 image block が生成される"""
+        md = "![Figure 1](_page_0_Figure_5.jpeg)"
+        blocks = builder.build_blocks(
+            md, image_uploads={"_page_0_Figure_5.jpeg": "abc-123-uuid"}
+        )
+        img = blocks[1]
+        assert img["type"] == "image"
+        assert img["image"]["type"] == "file_upload"
+        assert img["image"]["file_upload"]["id"] == "abc-123-uuid"
+        assert img["image"]["caption"][0]["text"]["content"] == "Figure 1"
+
+    def test_build_image_fallback_no_mapping(self, builder):
+        """マッピングに無いローカル画像はキャプション段落にフォールバック"""
+        md = "![Figure 1](_page_0_Figure_5.jpeg)"
+        blocks = builder.build_blocks(md, image_uploads={})
+        # image block ではなく paragraph にフォールバック
+        para = blocks[1]
+        assert para["type"] == "paragraph"
+        assert "Figure 1" in para["paragraph"]["rich_text"][0]["text"]["content"]
+
+    def test_build_blocks_backward_compat(self, builder):
+        """image_uploads=None（デフォルト）で既存動作と一致する"""
+        md = "# Title\n\nHello"
+        blocks_default = builder.build_blocks(md)
+        blocks_none = builder.build_blocks(md, image_uploads=None)
+        assert blocks_default == blocks_none
+
+
+class TestNotionBlockBuilderBulletVariants:
+    """`•` (U+2022) bullet と `- 1.` 番号付き再分類のテスト"""
+
+    def test_bullet_unicode(self, builder):
+        """`• item` が bulleted_list_item として認識される"""
+        blocks = builder.build_blocks("• Codex CLI: lightweight agent")
+        item = blocks[1]
+        assert item["type"] == "bulleted_list_item"
+        assert (
+            item["bulleted_list_item"]["rich_text"][0]["text"]["content"]
+            == "Codex CLI: lightweight agent"
+        )
+
+    def test_bullet_with_numbered_inside_becomes_numbered(self, builder):
+        """`- 1. xxx` は numbered_list_item として再分類される"""
+        blocks = builder.build_blocks("- 1. タスク要件を分析する")
+        item = blocks[1]
+        assert item["type"] == "numbered_list_item"
+        assert (
+            item["numbered_list_item"]["rich_text"][0]["text"]["content"]
+            == "タスク要件を分析する"
+        )
+
+    def test_indented_bullet(self, builder):
+        """先頭に空白がある bullet も検出される"""
+        blocks = builder.build_blocks("    - インデントされた項目")
+        item = blocks[1]
+        assert item["type"] == "bulleted_list_item"
+
+
+class TestNotionBlockBuilderHtmlStrip:
+    """HTML タグ除去のテスト"""
+
+    def test_strip_span_anchor(self, builder):
+        """`<span id="...">...</span>` が除去される"""
+        blocks = builder.build_blocks('<span id="page-1"></span>本文の段落です。')
+        para = blocks[1]
+        assert para["type"] == "paragraph"
+        assert (
+            para["paragraph"]["rich_text"][0]["text"]["content"] == "本文の段落です。"
+        )
+
+    def test_strip_sup(self, builder):
+        """`<sup>...</sup>` が除去される"""
+        blocks = builder.build_blocks("脚注付きテキスト<sup>1</sup>。")
+        para = blocks[1]
+        text = "".join(rt["text"]["content"] for rt in para["paragraph"]["rich_text"])
+        assert "<sup>" not in text
+        assert "1" not in text or text == "脚注付きテキスト。"
+
+
+class TestNotionBlockBuilderTableBr:
+    """テーブルセル内 `<br>` 改行処理のテスト"""
+
+    def test_cell_with_br(self, builder):
+        """セル内の `<br>` が rich_text の改行として扱われる"""
+        md = (
+            "| Harness | Models |\n|---|---|\n| Claude Code | Opus<br>Sonnet<br>Haiku |"
+        )
+        blocks = builder.build_blocks(md)
+        table = blocks[1]
+        cells = table["table"]["children"][1]["table_row"]["cells"]
+        # 2 列目のセル rich_text を結合すると改行が含まれる
+        joined = "".join(rt["text"]["content"] for rt in cells[1])
+        assert "Opus\nSonnet\nHaiku" in joined
+
+
+class TestNotionBlockBuilderEmptyTable:
+    """空・caption-only テーブルのフォールバックテスト"""
+
+    def test_caption_only_table_falls_back_to_paragraph(self, builder):
+        """データ行が無くヘッダーが実質1セルなら paragraph にフォールバック"""
+        md = "| 表18. スキルによる影響が最大のタスク |  |  |\n|---|---|---|\n|  |  |  |"
+        blocks = builder.build_blocks(md)
+        # divider + paragraph
+        assert blocks[1]["type"] == "paragraph"
+        assert "表18" in blocks[1]["paragraph"]["rich_text"][0]["text"]["content"]
+
+    def test_normal_table_still_built(self, builder):
+        """データ行があれば通常通りテーブル化される（リグレッション防止）"""
+        md = "| A | B |\n|---|---|\n| 1 | 2 |"
+        blocks = builder.build_blocks(md)
+        assert blocks[1]["type"] == "table"
+
+
+class TestNotionBlockBuilderTranslationFenceStrip:
+    """LLM 誤包装 ```markdown ... ``` の除去テスト"""
+
+    def test_unwrap_markdown_fence(self, builder):
+        """`\\`\\`\\`markdown` で包まれた翻訳セクションが展開される"""
+        md = "前段の段落\n\n```markdown\n### 見出し\n\n本文の段落\n```\n\n後段の段落"
+        blocks = builder.build_blocks(md)
+        types = [b["type"] for b in blocks]
+        # 見出しと段落が独立したブロックになり、code ブロックは生成されない
+        assert "heading_3" in types
+        assert "code" not in types
+
+    def test_preserve_legitimate_code_block(self, builder):
+        """内部に独立 ``` を持つ場合はコードブロックとして残す"""
+        md = "```python\nprint('hello')\n```\n"
+        blocks = builder.build_blocks(md)
+        types = [b["type"] for b in blocks]
+        assert "code" in types
+
+    def test_real_world_table_inside_fence(self, builder):
+        """テーブルが ```markdown 内にある場合も table として処理される"""
+        md = "```markdown\n| A | B |\n|---|---|\n| 1 | 2 |\n```\n"
+        blocks = builder.build_blocks(md)
+        types = [b["type"] for b in blocks]
+        assert "table" in types
+        assert "code" not in types

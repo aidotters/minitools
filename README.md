@@ -376,6 +376,63 @@ playwright install chromium
 GEMINI_API_KEY=your-gemini-api-key  # Geminiプロバイダー使用時
 ```
 
+#### ArXiv論文全文翻訳
+```bash
+# 論文PDFをダウンロード→Markdown変換→日本語翻訳→Notion保存（フルパイプライン）
+uv run arxiv-translate --url "https://arxiv.org/abs/2401.12345"
+
+# OpenAIプロバイダーで翻訳
+uv run arxiv-translate --url "https://..." --provider openai
+
+# プレビュー（Notionに保存しない）
+uv run arxiv-translate --url "https://..." --dry-run
+
+# 個別ステップ実行（失敗時のリトライ用）
+uv run arxiv-translate parse     --url "https://arxiv.org/abs/..."  # PDF→Markdown（VLM修復含む）
+uv run arxiv-translate translate --url "https://arxiv.org/abs/..."  # Markdown→日本語
+uv run arxiv-translate upload    --url "https://arxiv.org/abs/..."  # 日本語→Notion
+
+# VLM (multimodal LLM) によるパース欠陥修復
+uv run arxiv-translate parse --url "https://..." --no-vlm-repair  # 修復をスキップ
+uv run arxiv-translate repair --url "https://..."                 # 既存 raw.md に修復のみ実行
+uv run arxiv-translate repair --url "https://..." --dry-run       # 検出のみログ出力（書き換えなし）
+```
+
+##### 出力ディレクトリ構造
+
+論文ごとに `outputs/arxiv_translate/{safe_id}/` フォルダが作成され、関連ファイルがすべてその直下にまとめられる:
+
+```
+outputs/arxiv_translate/{safe_id}/
+├── {safe_id}.pdf              # PDF（識別性のため safe_id 維持）
+├── metadata.json              # 論文メタデータ
+├── raw.md                     # marker-pdf 出力
+├── repaired.md                # VLM 修復後（修復が適用された場合のみ）
+├── translated.md              # 日本語訳（最終出力）
+├── _page_X_Figure_Y.jpeg ...  # PDF から抽出した画像
+└── page_images/               # VLM 修復用ページレンダリングキャッシュ
+```
+
+##### 旧フラット構造からの移行
+
+以前のバージョンでは `outputs/arxiv_translate/` 直下にすべてのファイルがフラットに配置されていた。新構造に手動で移行するには次のスクリプトを利用できる:
+
+```bash
+cd outputs/arxiv_translate
+for f in *.pdf; do
+    id="${f%.pdf}"
+    [ -d "$id" ] && continue   # 既に新構造のフォルダなら skip
+    mkdir -p "$id"
+    mv "${id}.pdf"             "$id/${id}.pdf"          2>/dev/null
+    mv "${id}_raw.md"          "$id/raw.md"             2>/dev/null
+    mv "${id}_repaired.md"     "$id/repaired.md"        2>/dev/null
+    mv "${id}.md"              "$id/translated.md"      2>/dev/null
+    mv "${id}_metadata.json"   "$id/metadata.json"      2>/dev/null
+    [ -d "${id}_images" ]      && mv "${id}_images/"* "$id/" && rmdir "${id}_images"
+    [ -d "${id}_page_images" ] && mv "${id}_page_images" "$id/page_images"
+done
+```
+
 #### Google Alerts
 ```bash
 # 過去6時間のアラートを処理（デフォルト）
@@ -577,6 +634,22 @@ NotionのGoogle Alertsデータベースから過去1週間の記事を取得し
 # 毎週月曜日9時に実行
 0 9 * * 1 cd /path/to/minitools && /path/to/uv run google-alert-weekly-digest
 ```
+
+### ArXiv論文全文翻訳
+
+arXiv論文のPDFをダウンロードし、marker-pdfでMarkdownに変換後、LLMで日本語に翻訳してNotionに保存します。
+
+**特徴**:
+- marker-pdfによる高精度なPDF→Markdown変換（セクション、数式、図表対応）
+- 数式の保持（インライン `$...$`、ブロック `$$...$$`）
+- 見出し単位でチャンク分割し、構造を保ったまま翻訳
+- コードブロック内はコメントのみ翻訳
+- 3ステップ（parse / translate / upload）に分離可能で失敗時のリトライが容易
+
+**オプション**:
+- `--url`: arXiv論文のURL（必須、`abs/` または `pdf/` 形式）
+- `--provider`: LLMプロバイダーの選択（ollama / openai / gemini）
+- `--dry-run`: プレビュー（Notionに保存しない）
 
 ### ArXiv週次ダイジェスト
 

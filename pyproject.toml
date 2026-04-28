@@ -29,6 +29,9 @@ dependencies = [
     "langchain-openai>=0.3.0",
     "tavily-python>=0.3.0",
     "langchain-google-genai>=4.2.0",
+    "marker-pdf>=1.10.0",
+    "opencv-python-headless>=4.11.0.86",
+    "pymupdf>=1.24.0",
 ]
 
 [project.optional-dependencies]
@@ -48,6 +51,7 @@ youtube = "scripts.youtube:main"
 google-alert-weekly-digest = "scripts.google_alert_weekly_digest:main"
 arxiv-weekly = "scripts.arxiv_weekly:main"
 medium-translate = "scripts.medium_translate:main"
+arxiv-translate = "scripts.arxiv_translate:main"
 x-trend = "scripts.x_trend:main"
 x-followings = "scripts.x_followings:main"
 
