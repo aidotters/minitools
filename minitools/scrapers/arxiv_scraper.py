@@ -57,6 +57,7 @@ class PaperContent:
     markdown: str
     images: list[PaperImage] = field(default_factory=list)
     metadata: PaperMetadata | None = None
+    pdf_bytes: bytes | None = None
 
 
 class ArxivScraper:
@@ -211,12 +212,15 @@ class ArxivScraper:
         markdown = result.markdown
         logger.info(f"Markdown generated: {len(markdown)} chars")
 
-        # 画像の抽出
+        # 画像の抽出（marker-pdf は PIL.Image を返すため bytes に変換）
         images: list[PaperImage] = []
-        for filename, image_data in result.images.items():
+        for filename, image_obj in result.images.items():
+            data = self._image_to_bytes(image_obj, filename)
+            if data is None:
+                continue
             images.append(
                 PaperImage(
-                    data=image_data,
+                    data=data,
                     filename=filename,
                 )
             )
@@ -225,6 +229,38 @@ class ArxivScraper:
             logger.info(f"Extracted {len(images)} images from PDF")
 
         return markdown, images
+
+    @staticmethod
+    def _image_to_bytes(image_obj: Any, filename: str) -> bytes | None:
+        """marker-pdf が返す画像オブジェクトを bytes に変換する
+
+        marker-pdf は PIL.Image.Image を返すため、ファイル拡張子に基づいた
+        フォーマットでエンコードしてバイナリ列に変換する。すでに bytes の
+        場合（互換用）はそのまま返す。
+        """
+        if isinstance(image_obj, (bytes, bytearray, memoryview)):
+            return bytes(image_obj)
+
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "png"
+        format_map = {
+            "jpg": "JPEG",
+            "jpeg": "JPEG",
+            "png": "PNG",
+            "gif": "GIF",
+            "webp": "WEBP",
+            "bmp": "BMP",
+            "tiff": "TIFF",
+            "tif": "TIFF",
+        }
+        fmt = format_map.get(ext, "PNG")
+
+        try:
+            buf = io.BytesIO()
+            image_obj.save(buf, format=fmt)
+            return buf.getvalue()
+        except Exception as e:
+            logger.warning(f"Failed to encode image {filename} as {fmt}: {e}")
+            return None
 
     async def fetch_metadata(self, arxiv_id: str) -> PaperMetadata | None:
         """ArXiv APIからメタデータ取得
@@ -331,4 +367,5 @@ class ArxivScraper:
             markdown=markdown,
             images=images,
             metadata=metadata,
+            pdf_bytes=pdf_data,
         )

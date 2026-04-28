@@ -2,8 +2,9 @@
 LangChain-based OpenAI LLM client implementation.
 """
 
+import base64
 import os
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
@@ -153,6 +154,38 @@ class LangChainOpenAIClient(BaseLLMClient):
         """
         messages = [{"role": "user", "content": prompt}]
         return await self.chat(messages, model)
+
+    async def generate_from_images(
+        self,
+        prompt: str,
+        images: List[bytes],
+        mime_type: str = "image/png",
+        model: Optional[str] = None,
+    ) -> str:
+        """画像とプロンプトからテキスト生成（multimodal）"""
+        try:
+            chat_model = self._get_chat_model(model)
+            content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+            for img in images:
+                b64 = base64.b64encode(img).decode("ascii")
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{b64}",
+                        },
+                    }
+                )
+            message = HumanMessage(content=content)  # type: ignore[arg-type]
+
+            response = await chat_model.ainvoke([message])
+            result = str(response.content).strip() if response.content else ""
+            logger.debug(f"LangChain OpenAI multimodal response: {result[:100]}...")
+            return result
+
+        except Exception as e:
+            logger.error(f"LangChain OpenAI multimodal error: {e}")
+            raise LLMError(f"LangChain OpenAI multimodal call failed: {e}") from e
 
     async def chat_json(
         self,

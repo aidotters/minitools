@@ -506,6 +506,29 @@ class BaseLLMClient(ABC):
         Returns:
             生成されたテキスト
         """
+
+    async def generate_from_images(
+        self,
+        prompt: str,
+        images: List[bytes],
+        mime_type: str = "image/png",
+        model: Optional[str] = None
+    ) -> str:
+        """
+        画像とプロンプトからテキスト生成（multimodal）
+
+        デフォルト実装は warning を出して空文字列を返す。multimodal 対応プロバイダ
+        （Gemini / OpenAI）では `HumanMessage` の content list 形式で画像を渡す。
+
+        Args:
+            prompt: 生成のためのプロンプト
+            images: 画像バイト列のリスト
+            mime_type: 画像のMIMEタイプ（"image/png" or "image/jpeg"）
+            model: 使用するモデル名（省略時はデフォルトモデルを使用）
+
+        Returns:
+            生成されたテキスト（未対応時は空文字列）
+        """
 ```
 
 ---
@@ -1830,6 +1853,29 @@ class NotionPublisher:
         Returns:
             追記成功の場合True
         """
+
+    async def upload_file(
+        self,
+        file_path: Path,
+        mime_type: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        画像ファイルをNotion File Upload APIにアップロードし、file_upload_idを返す
+
+        2 段階の API 呼び出し:
+          1. POST /v1/file_uploads で upload_url を取得
+          2. 取得した upload_url に multipart/form-data で画像を送信（3回リトライ）
+
+        5MB超の画像はwarningログを出力し、Noneを返す。
+        mime_typeがNoneの場合はmimetypes.guess_type()で推定する。
+
+        Args:
+            file_path: アップロードする画像ファイルのパス
+            mime_type: MIMEタイプ（指定しない場合は推定）
+
+        Returns:
+            file_upload_id (UUID文字列)。失敗時はNone。
+        """
 ```
 
 **使用例:**
@@ -1882,7 +1928,11 @@ Markdown文字列をNotion APIのブロック形式に変換するクラス。
 class NotionBlockBuilder:
     """MarkdownをNotion APIブロック形式に変換するクラス"""
 
-    def build_blocks(self, markdown: str) -> List[Dict[str, Any]]:
+    def build_blocks(
+        self,
+        markdown: str,
+        image_uploads: Optional[Dict[str, str]] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Markdown文字列をNotionブロックのリストに変換
 
@@ -1891,12 +1941,20 @@ class NotionBlockBuilder:
         - heading_1, heading_2, heading_3
         - paragraph
         - code（言語指定付き）
-        - image（外部URL参照）
+        - image（外部URL / file_upload）
         - bulleted_list_item, numbered_list_item
         - quote
+        - equation（ブロック数式 $$...$$）
+        - table（Markdownテーブル → Notion table）
+
+        rich_text内のインライン書式:
+        - bold, italic, inline code, link
+        - equation（インライン数式 $...$、エスケープ \\$ は通常文字として扱う）
 
         Args:
             markdown: 変換するMarkdown文字列
+            image_uploads: ローカル画像ファイル名 → file_upload_id のマッピング。
+                Noneまたは空辞書の場合、ローカル画像はキャプション段落にフォールバックする。
 
         Returns:
             Notion APIブロック形式の辞書リスト
@@ -1906,8 +1964,12 @@ class NotionBlockBuilder:
 **使用例:**
 ```python
 builder = NotionBlockBuilder()
+# 基本: 外部URL画像のみ（後方互換）
 blocks = builder.build_blocks(translated_markdown)
-# blocksはNotion append block children APIに渡せる形式
+
+# ローカル画像を file_upload 型で埋め込む
+image_uploads = {"_page_0_Figure_5.jpeg": "abc-123-uuid"}
+blocks = builder.build_blocks(translated_markdown, image_uploads=image_uploads)
 ```
 
 ---

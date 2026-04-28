@@ -215,3 +215,73 @@ class TestFullTextTranslatorTranslation:
 
         result = await translator.translate("Original text")
         assert result == "Original text"
+
+
+class TestFullTextTranslatorTablePreservation:
+    """テーブル構造保持のテスト"""
+
+    def test_split_preserves_table(self):
+        """テーブル行がチャンク境界で分割されない"""
+        mock_llm = MockLLMClient()
+        translator = FullTextTranslator(llm_client=mock_llm, chunk_size=60)
+
+        # chunk_size 超のテキストで、テーブルが中央に含まれるケース
+        md = (
+            "Intro paragraph that is not short at all to force splitting.\n\n"
+            "| A | B |\n"
+            "|---|---|\n"
+            "| 1 | 2 |\n"
+            "| 3 | 4 |\n\n"
+            "Trailing paragraph text here."
+        )
+        chunks = translator._split_into_chunks(md)
+
+        # テーブル行は同一チャンク内にまとまっている
+        for chunk in chunks:
+            if "| A | B |" in chunk:
+                assert "|---|---|" in chunk
+                assert "| 1 | 2 |" in chunk
+                assert "| 3 | 4 |" in chunk
+                break
+        else:
+            raise AssertionError("Table header not found in any chunk")
+
+    def test_translation_prompt_has_table_rule(self):
+        """翻訳プロンプトにテーブル構造維持ルールが含まれる"""
+        from minitools.processors.full_text_translator import TRANSLATION_PROMPT
+
+        assert "テーブル構造維持" in TRANSLATION_PROMPT
+
+    def test_translation_prompt_forbids_outer_fence(self):
+        """プロンプトに「コードフェンスで包まない」ルールが含まれる"""
+        from minitools.processors.full_text_translator import TRANSLATION_PROMPT
+
+        assert "コードフェンスで包まない" in TRANSLATION_PROMPT
+
+
+class TestFullTextTranslatorOuterFenceUnwrap:
+    """LLM が出力全体を ```markdown ... ``` で包んだ場合の剥離テスト"""
+
+    def test_unwrap_markdown_fence(self):
+        """```markdown ... ``` で包まれた出力が剥離される"""
+        wrapped = "```markdown\n# 見出し\n\n本文\n```"
+        result = FullTextTranslator._unwrap_outer_code_fence(wrapped)
+        assert result == "# 見出し\n\n本文"
+
+    def test_unwrap_plain_fence(self):
+        """言語指定なし ``` ... ``` でも剥離される"""
+        wrapped = "```\n# 見出し\n\n本文\n```"
+        result = FullTextTranslator._unwrap_outer_code_fence(wrapped)
+        assert result == "# 見出し\n\n本文"
+
+    def test_no_unwrap_when_inner_fence(self):
+        """内側に独立 ``` がある場合は剥離しない（誤剥離防止）"""
+        wrapped = "```markdown\n# 見出し\n\n```python\ncode\n```\n\n本文\n```"
+        result = FullTextTranslator._unwrap_outer_code_fence(wrapped)
+        assert result == wrapped
+
+    def test_no_unwrap_for_normal_text(self):
+        """通常の翻訳結果はそのまま返す"""
+        text = "# 見出し\n\n本文の段落"
+        result = FullTextTranslator._unwrap_outer_code_fence(text)
+        assert result == text
