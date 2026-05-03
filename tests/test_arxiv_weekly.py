@@ -466,3 +466,227 @@ class TestArxivBatchScoring:
 
         assert len(result) == 15
         assert all("importance_score" in paper for paper in result)
+
+
+class TestArxivWeeklyTwoTier:
+    """ArxivWeeklyProcessorの2層構成テスト"""
+
+    @pytest.fixture
+    def sample_papers_with_urls(self):
+        """arXiv ID付きのサンプル論文データ"""
+        return [
+            {
+                "title": "Paper A - High HF Upvotes",
+                "日本語訳": "HFで人気の論文A",
+                "url": "https://arxiv.org/abs/2601.00001",
+            },
+            {
+                "title": "Paper B - Medium HF Upvotes",
+                "日本語訳": "HFで中程度の人気の論文B",
+                "url": "https://arxiv.org/abs/2601.00002",
+            },
+            {
+                "title": "Paper C - No HF",
+                "日本語訳": "HFにない論文C",
+                "url": "https://arxiv.org/abs/2601.00003",
+            },
+            {
+                "title": "Paper D - No HF but good LLM score",
+                "日本語訳": "LLMスコアが高い論文D",
+                "url": "https://arxiv.org/abs/2601.00004",
+            },
+            {
+                "title": "Paper E - Low HF",
+                "日本語訳": "HFで少しだけ人気の論文E",
+                "url": "https://arxiv.org/abs/2601.00005",
+            },
+        ]
+
+    def test_extract_arxiv_id(self):
+        """arXiv ID抽出のテスト"""
+        from minitools.processors.arxiv_weekly import ArxivWeeklyProcessor
+
+        assert (
+            ArxivWeeklyProcessor._extract_arxiv_id("https://arxiv.org/abs/2601.00001")
+            == "2601.00001"
+        )
+        assert (
+            ArxivWeeklyProcessor._extract_arxiv_id("https://arxiv.org/abs/2601.00001v2")
+            == "2601.00001"
+        )
+        assert (
+            ArxivWeeklyProcessor._extract_arxiv_id("https://arxiv.org/pdf/2601.12345")
+            == "2601.12345"
+        )
+        assert ArxivWeeklyProcessor._extract_arxiv_id("invalid-url") == ""
+
+    @pytest.mark.asyncio
+    async def test_process_two_tier_with_hf(self, sample_papers_with_urls):
+        """HFリサーチャー付きの2層構成テスト"""
+        from minitools.processors.arxiv_weekly import ArxivWeeklyProcessor
+        from minitools.researchers.hf_papers import HFPaperStats, HFPapersResearcher
+        from unittest.mock import AsyncMock
+
+        score_response = json.dumps(
+            {
+                "technical_novelty": 8,
+                "industry_impact": 7,
+                "practicality": 9,
+                "reason": "Good paper",
+            }
+        )
+        mock_llm = MockLLMClient(json_response=score_response)
+
+        # HFリサーチャーのモック
+        mock_hf = AsyncMock(spec=HFPapersResearcher)
+        mock_hf.get_papers_stats.return_value = {
+            "2601.00001": HFPaperStats(
+                "2601.00001", upvotes=100, num_comments=10, found_on_hf=True
+            ),
+            "2601.00002": HFPaperStats(
+                "2601.00002", upvotes=50, num_comments=3, found_on_hf=True
+            ),
+            "2601.00003": HFPaperStats("2601.00003"),
+            "2601.00004": HFPaperStats("2601.00004"),
+            "2601.00005": HFPaperStats(
+                "2601.00005", upvotes=5, num_comments=1, found_on_hf=True
+            ),
+        }
+
+        processor = ArxivWeeklyProcessor(
+            llm_client=mock_llm,
+            hf_researcher=mock_hf,
+        )
+
+        result = await processor.process(
+            papers=sample_papers_with_urls,
+            use_trends=False,
+            hf_top_n=2,
+            llm_top_n=2,
+        )
+
+        # 2セクション構成
+        assert "hf_papers" in result
+        assert "llm_papers" in result
+        assert len(result["hf_papers"]) == 2
+        assert len(result["llm_papers"]) == 2
+
+        # HFセクションはupvote降順
+        assert result["hf_papers"][0].get("hf_upvotes") == 100
+        assert result["hf_papers"][1].get("hf_upvotes") == 50
+
+        # HF選出論文がLLMセクションにない
+        hf_urls = {p["url"] for p in result["hf_papers"]}
+        llm_urls = {p["url"] for p in result["llm_papers"]}
+        assert hf_urls.isdisjoint(llm_urls)
+
+        # 後方互換: papers は全セクションのマージ
+        assert len(result["papers"]) == 4
+
+    @pytest.mark.asyncio
+    async def test_process_without_hf_researcher(self, sample_papers_with_urls):
+        """HFリサーチャーなしの場合は従来動作"""
+        from minitools.processors.arxiv_weekly import ArxivWeeklyProcessor
+
+        score_response = json.dumps(
+            {
+                "technical_novelty": 8,
+                "industry_impact": 7,
+                "practicality": 9,
+                "reason": "Good paper",
+            }
+        )
+        mock_llm = MockLLMClient(json_response=score_response)
+
+        processor = ArxivWeeklyProcessor(llm_client=mock_llm)
+
+        result = await processor.process(
+            papers=sample_papers_with_urls,
+            top_n=3,
+            use_trends=False,
+        )
+
+        assert result["hf_papers"] == []
+        assert result["llm_papers"] == []
+        assert len(result["papers"]) == 3
+
+    @pytest.mark.asyncio
+    async def test_process_hf_failure_fallback(self, sample_papers_with_urls):
+        """HF API障害時はHFセクション空でLLMのみ"""
+        from minitools.processors.arxiv_weekly import ArxivWeeklyProcessor
+        from minitools.researchers.hf_papers import HFPapersResearcher
+        from unittest.mock import AsyncMock
+
+        score_response = json.dumps(
+            {
+                "technical_novelty": 8,
+                "industry_impact": 7,
+                "practicality": 9,
+                "reason": "Good paper",
+            }
+        )
+        mock_llm = MockLLMClient(json_response=score_response)
+
+        mock_hf = AsyncMock(spec=HFPapersResearcher)
+        mock_hf.get_papers_stats.side_effect = Exception("HF API down")
+
+        processor = ArxivWeeklyProcessor(
+            llm_client=mock_llm,
+            hf_researcher=mock_hf,
+        )
+
+        result = await processor.process(
+            papers=sample_papers_with_urls,
+            use_trends=False,
+            hf_top_n=2,
+            llm_top_n=3,
+        )
+
+        # HFセクションは空（全論文にhf_upvotesが付与されないため）
+        assert result["hf_papers"] == []
+        # LLMセクションは全論文から選出
+        assert len(result["llm_papers"]) == 3
+
+    @pytest.mark.asyncio
+    async def test_no_hf_upvoted_papers(self, sample_papers_with_urls):
+        """HF上にupvote > 0の論文がない場合"""
+        from minitools.processors.arxiv_weekly import ArxivWeeklyProcessor
+        from minitools.researchers.hf_papers import HFPaperStats, HFPapersResearcher
+        from unittest.mock import AsyncMock
+
+        score_response = json.dumps(
+            {
+                "technical_novelty": 8,
+                "industry_impact": 7,
+                "practicality": 9,
+                "reason": "Good paper",
+            }
+        )
+        mock_llm = MockLLMClient(json_response=score_response)
+
+        mock_hf = AsyncMock(spec=HFPapersResearcher)
+        mock_hf.get_papers_stats.return_value = {
+            aid: HFPaperStats(aid)
+            for aid in [
+                "2601.00001",
+                "2601.00002",
+                "2601.00003",
+                "2601.00004",
+                "2601.00005",
+            ]
+        }
+
+        processor = ArxivWeeklyProcessor(
+            llm_client=mock_llm,
+            hf_researcher=mock_hf,
+        )
+
+        result = await processor.process(
+            papers=sample_papers_with_urls,
+            use_trends=False,
+            hf_top_n=2,
+            llm_top_n=3,
+        )
+
+        assert result["hf_papers"] == []
+        assert len(result["llm_papers"]) == 3

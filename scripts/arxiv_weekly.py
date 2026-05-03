@@ -19,6 +19,7 @@ from minitools.llm import get_llm_client
 from minitools.processors import ArxivWeeklyProcessor
 from minitools.publishers.slack import SlackPublisher
 from minitools.readers.notion import NotionReader
+from minitools.researchers.hf_papers import HFPapersResearcher
 from minitools.researchers.trend import TrendResearcher
 from minitools.utils.config import get_config
 from minitools.utils.logger import setup_logger
@@ -33,17 +34,21 @@ async def generate_digest(
     dry_run: bool,
     output_file: str | None,
     no_trends: bool = False,
+    hf_top_n: int = 5,
+    llm_top_n: int = 5,
 ) -> int:
     """
     ArXiv週次ダイジェストを生成
 
     Args:
         days: 過去何日分の論文を取得するか
-        top_n: 上位何件の論文を選出するか
-        provider: LLMプロバイダー（ollama/openai）
+        top_n: 上位何件の論文を選出するか（後方互換、HF未使用時）
+        provider: LLMプロバイダー（ollama/openai/gemini）
         dry_run: True の場合はSlack送信をスキップ
         output_file: 出力ファイルパス（指定時はファイルに保存）
         no_trends: True の場合はトレンド調査をスキップ
+        hf_top_n: HFセクションの取得件数
+        llm_top_n: LLMセクションの取得件数
 
     Returns:
         実際に処理された論文数
@@ -58,7 +63,8 @@ async def generate_digest(
         f"Generating ArXiv weekly digest for {start_date_str} to {end_date_str}"
     )
     logger.info(
-        f"LLM Provider: {provider}, Top papers: {top_n}, Trends: {'disabled' if no_trends else 'enabled'}"
+        f"LLM Provider: {provider}, HF top: {hf_top_n}, LLM top: {llm_top_n}, "
+        f"Trends: {'disabled' if no_trends else 'enabled'}"
     )
 
     # Notion DBからArXiv論文を取得
@@ -101,25 +107,32 @@ async def generate_digest(
     if not no_trends:
         trend_researcher = TrendResearcher()
 
-    # ArXiv週次ダイジェストを生成
-    processor = ArxivWeeklyProcessor(
-        llm_client=llm_client,
-        trend_researcher=trend_researcher,
-    )
-    result = await processor.process(
-        papers=papers,
-        top_n=top_n,
-        use_trends=not no_trends,
-    )
+    # HFPapersResearcherを使用して2層構成のダイジェストを生成
+    async with HFPapersResearcher() as hf_researcher:
+        processor = ArxivWeeklyProcessor(
+            llm_client=llm_client,
+            trend_researcher=trend_researcher,
+            hf_researcher=hf_researcher,
+        )
+        result = await processor.process(
+            papers=papers,
+            top_n=top_n,
+            use_trends=not no_trends,
+            hf_top_n=hf_top_n,
+            llm_top_n=llm_top_n,
+        )
 
     trend_info = result.get("trend_info")
     top_papers = result["papers"]
+    hf_papers = result.get("hf_papers", [])
+    llm_papers = result.get("llm_papers", [])
     total_papers = result["total_papers"]
 
     trend_summary = trend_info.get("summary") if trend_info else None
 
     logger.info(
-        f"Processing complete: {len(top_papers)} top papers selected from {total_papers}"
+        f"Processing complete: {len(hf_papers)} HF + {len(llm_papers)} LLM papers "
+        f"selected from {total_papers}"
     )
 
     # Slackフォーマットでメッセージを生成
@@ -129,6 +142,8 @@ async def generate_digest(
         end_date=end_date_str,
         papers=top_papers,
         trend_summary=trend_summary,
+        hf_papers=hf_papers,
+        llm_papers=llm_papers,
     )
 
     # ファイル出力
@@ -208,7 +223,7 @@ Examples:
     )
     parser.add_argument(
         "--provider",
-        choices=["ollama", "openai"],
+        choices=["ollama", "openai", "gemini"],
         default=default_provider,
         help=f"LLMプロバイダー（デフォルト: {default_provider}）",
     )
@@ -234,11 +249,17 @@ Examples:
 
     args = parser.parse_args()
 
+    # settings.yamlからhf_top_n, llm_top_nを取得
+    hf_top_n = config.get("defaults.arxiv_weekly.hf_top_n", 5)
+    llm_top_n = config.get("defaults.arxiv_weekly.llm_top_n", 5)
+
     logger.info("=" * 60)
     logger.info("ArXiv Weekly Digest")
     logger.info("=" * 60)
     logger.info(f"Days: {args.days}")
     logger.info(f"Top papers: {args.top}")
+    logger.info(f"HF top N: {hf_top_n}")
+    logger.info(f"LLM top N: {llm_top_n}")
     logger.info(f"Provider: {args.provider}")
     logger.info(f"Trends: {'disabled' if args.no_trends else 'enabled'}")
     logger.info(f"Dry run: {args.dry_run}")
@@ -253,6 +274,8 @@ Examples:
             dry_run=args.dry_run,
             output_file=args.output,
             no_trends=args.no_trends,
+            hf_top_n=hf_top_n,
+            llm_top_n=llm_top_n,
         )
     )
 

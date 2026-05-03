@@ -898,6 +898,75 @@ if trends:
 
 ---
 
+### HFPapersResearcher
+
+HuggingFace Papers APIを使用して論文のupvote数・コメント数を取得するクラス。
+
+**ファイル:** `minitools/researchers/hf_papers.py`
+
+```python
+@dataclass
+class HFPaperStats:
+    """HuggingFace Papers APIから取得した論文統計"""
+    arxiv_id: str
+    upvotes: int = 0
+    num_comments: int = 0
+    found_on_hf: bool = False
+
+class HFPapersResearcher:
+    """HuggingFace Papers APIを使用して論文の統計情報を取得するクラス"""
+
+    def __init__(self, max_concurrent: int = 5):
+        """
+        コンストラクタ
+
+        Args:
+            max_concurrent: 最大同時接続数（デフォルト: 5）
+        """
+
+    async def __aenter__(self) -> "HFPapersResearcher": ...
+    async def __aexit__(self, ...): ...
+
+    async def get_paper_stats(self, arxiv_id: str) -> HFPaperStats:
+        """
+        単一論文のHF統計を取得
+
+        Args:
+            arxiv_id: arXiv ID (例: "2601.00001")
+
+        Returns:
+            HFPaperStats（404の場合はupvotes=0, found_on_hf=False）
+        """
+
+    async def get_papers_stats(self, arxiv_ids: list[str]) -> dict[str, HFPaperStats]:
+        """
+        複数論文のHF統計を一括取得（asyncio.gatherで並列実行）
+
+        Args:
+            arxiv_ids: arXiv IDのリスト
+
+        Returns:
+            arXiv ID -> HFPaperStats のマッピング
+        """
+```
+
+**使用例:**
+```python
+from minitools.researchers import HFPapersResearcher
+
+async with HFPapersResearcher(max_concurrent=5) as researcher:
+    stats = await researcher.get_papers_stats(["2601.00001", "2601.00002"])
+    for arxiv_id, stat in stats.items():
+        print(f"{arxiv_id}: {stat.upvotes} upvotes, {stat.num_comments} comments")
+```
+
+**エラーハンドリング:**
+- 404（HF未登録）: `HFPaperStats(upvotes=0, found_on_hf=False)` を返す
+- 429/5xx: exponential backoff（2s, 4s, 8s）で最大3回リトライ
+- リトライ後も失敗: `HFPaperStats(upvotes=0)` をデフォルト返却
+
+---
+
 ## Scrapers
 
 ### MediumScraper
@@ -1696,7 +1765,7 @@ deduped = await deduplicate_articles(
 
 ### ArxivWeeklyProcessor
 
-ArXiv週次ダイジェスト生成プロセッサ。バッチ処理により高速なスコアリングを実現。
+ArXiv週次ダイジェスト生成プロセッサ。2層構成（HF upvotes + LLMスコアリング）によるランキングとバッチ処理による高速スコアリングを実現。
 
 **ファイル:** `minitools/processors/arxiv_weekly.py`
 
@@ -1708,6 +1777,7 @@ class ArxivWeeklyProcessor:
         self,
         llm_client: BaseLLMClient,
         trend_researcher: Optional[TrendResearcher] = None,
+        hf_researcher: Optional[HFPapersResearcher] = None,
         max_concurrent: int = 3,
         batch_size: Optional[int] = None
     ):
@@ -1717,8 +1787,20 @@ class ArxivWeeklyProcessor:
         Args:
             llm_client: LLMクライアントインスタンス
             trend_researcher: TrendResearcherインスタンス（省略時は使用しない）
+            hf_researcher: HFPapersResearcherインスタンス（省略時はHFセクションをスキップ）
             max_concurrent: 最大並列処理数（デフォルト: 3）
             batch_size: バッチスコアリングのサイズ（省略時は設定ファイルから取得、デフォルト: 20）
+        """
+
+    @staticmethod
+    def _extract_arxiv_id(url: str) -> str:
+        """URLからarXiv IDを抽出
+
+        Args:
+            url: arXiv URL (例: "https://arxiv.org/abs/2601.00001v1")
+
+        Returns:
+            arXiv ID (例: "2601.00001")、抽出できない場合は空文字列
         """
 
     async def rank_papers_by_importance(
@@ -1781,21 +1863,31 @@ class ArxivWeeklyProcessor:
         self,
         papers: List[Dict[str, Any]],
         top_n: int = 10,
-        use_trends: bool = True
+        use_trends: bool = True,
+        hf_top_n: int = 5,
+        llm_top_n: int = 5
     ) -> Dict[str, Any]:
         """
-        一括処理: トレンド調査 → スコアリング → 選出 → ハイライト生成
+        一括処理: HF統計取得 → トレンド調査 → スコアリング → 選出 → ハイライト生成
+
+        2層構成:
+        - セクション1: HF upvote上位 (hf_researcher が指定されている場合)
+        - セクション2: LLMスコアリング上位 (セクション1を除外した残り)
 
         Args:
             papers: 全論文リスト
-            top_n: 上位論文数（デフォルト: 10）
+            top_n: 上位論文数（後方互換、hf_researcher未指定時に使用）
             use_trends: Trueの場合、Tavily APIでトレンドを調査してスコアリングに使用
+            hf_top_n: HFセクションの取得件数（デフォルト: 5）
+            llm_top_n: LLMセクションの取得件数（デフォルト: 5）
 
         Returns:
             処理結果の辞書:
             - trend_info: トレンド情報（use_trends=Falseの場合はNone）
-            - papers: 上位論文リスト（ハイライト付き）
+            - papers: 全セクションの論文をマージ（後方互換）
             - total_papers: 処理した論文総数
+            - hf_papers: セクション1の論文リスト（HF upvote上位）
+            - llm_papers: セクション2の論文リスト（LLMスコア上位）
         """
 ```
 
@@ -1803,23 +1895,27 @@ class ArxivWeeklyProcessor:
 ```python
 from minitools.llm import get_llm_client
 from minitools.processors import ArxivWeeklyProcessor
-from minitools.researchers import TrendResearcher
+from minitools.researchers import TrendResearcher, HFPapersResearcher
 
-llm = get_llm_client(provider="ollama")
+llm = get_llm_client(provider="openai")
 trend_researcher = TrendResearcher()
 
-processor = ArxivWeeklyProcessor(
-    llm_client=llm,
-    trend_researcher=trend_researcher
-)
+async with HFPapersResearcher() as hf_researcher:
+    processor = ArxivWeeklyProcessor(
+        llm_client=llm,
+        trend_researcher=trend_researcher,
+        hf_researcher=hf_researcher,
+    )
 
-result = await processor.process(
-    papers=papers_list,
-    top_n=10,
-    use_trends=True
-)
+    result = await processor.process(
+        papers=papers_list,
+        use_trends=True,
+        hf_top_n=5,
+        llm_top_n=5,
+    )
 
-print(f"Trend summary: {result['trend_info']['summary']}")
+print(f"HF papers: {len(result['hf_papers'])}")
+print(f"LLM papers: {len(result['llm_papers'])}")
 for paper in result['papers']:
     print(f"{paper['title']} - スコア: {paper['importance_score']}")
     print(f"  選出理由: {paper['selection_reason']}")
@@ -2374,16 +2470,25 @@ class SlackPublisher:
         start_date: str,
         end_date: str,
         papers: List[Dict[str, Any]],
-        trend_summary: Optional[str] = None
+        trend_summary: Optional[str] = None,
+        hf_papers: Optional[List[Dict[str, Any]]] = None,
+        llm_papers: Optional[List[Dict[str, Any]]] = None
     ) -> str:
         """
         ArXiv週次ダイジェストをSlackメッセージ形式にフォーマット
 
+        hf_papers/llm_papers が渡された場合は2セクション構成:
+        - セクション1「今週の注目論文（HuggingFace Upvotes）」: upvote数・コメント数表示
+        - セクション2「AIが注目する論文（LLMスコア）」: LLMスコア表示
+        渡されない場合は従来のフォーマット（後方互換）。
+
         Args:
             start_date: 期間開始日（YYYY-MM-DD形式）
             end_date: 期間終了日（YYYY-MM-DD形式）
-            papers: 上位論文リスト（selection_reason, key_points付き）
+            papers: 上位論文リスト（後方互換、hf/llm未指定時に使用）
             trend_summary: 今週のAIトレンド概要（省略可）
+            hf_papers: セクション1のHF upvote上位論文（省略可）
+            llm_papers: セクション2のLLMスコア上位論文（省略可）
 
         Returns:
             フォーマットされたメッセージ（3000文字以内）
@@ -2395,6 +2500,8 @@ class SlackPublisher:
         end_date: str,
         papers: List[Dict[str, Any]],
         trend_summary: Optional[str] = None,
+        hf_papers: Optional[List[Dict[str, Any]]] = None,
+        llm_papers: Optional[List[Dict[str, Any]]] = None,
         webhook_url: Optional[str] = None
     ) -> bool:
         """
@@ -2405,6 +2512,8 @@ class SlackPublisher:
             end_date: 期間終了日
             papers: 上位論文リスト
             trend_summary: トレンド総括（省略可）
+            hf_papers: HF upvote上位論文（省略可）
+            llm_papers: LLMスコア上位論文（省略可）
             webhook_url: 使用するWebhook URL（オプション）
 
         Returns:

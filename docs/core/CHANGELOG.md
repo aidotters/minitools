@@ -52,6 +52,19 @@
   - 追加修正: Gemini 3 系のレスポンス `content` が parts list 形式（``[{"type": "text", "text": "..."}]``）になる挙動に対応する `_extract_text()` ヘルパーを追加し、`chat()` / `chat_json()` / `generate_from_images()` で利用。Gemini 2.x の str 形式とも後方互換
 
 ### Added
+- **ArXiv Weekly Digest 2層構成（HF Upvotes + LLMスコア）**: 客観的指標と主観的評価の2層構成でより有用な論文推薦を実現
+  - 新規コンポーネント:
+    - `minitools/researchers/hf_papers.py` - HFPapersResearcher（HuggingFace Papers APIクライアント、async + Semaphore(5) + exponential backoff）
+    - `HFPaperStats` dataclass（arxiv_id, upvotes, num_comments, found_on_hf）
+  - ArxivWeeklyProcessor拡張: `hf_researcher`パラメータ追加、`process()`を2層構成に拡張
+    - セクション1: HF upvote上位（客観的、再現性あり）
+    - セクション2: LLMスコアリング上位（セクション1除外、文脈理解）
+    - HF統計取得とトレンド調査を`asyncio.gather`で並列実行
+  - SlackPublisher拡張: `format_arxiv_weekly()`に`hf_papers`/`llm_papers`引数追加、2セクション構成出力
+  - NotionPublisher拡張: `_build_arxiv_properties()`に`HF Upvotes`（number）プロパティ追加
+  - CLI拡張: `--provider gemini`選択肢追加、`hf_top_n`/`llm_top_n`をsettings.yamlから読み込み
+  - 新規設定項目: `defaults.arxiv_weekly.hf_top_n`（デフォルト: 5）、`defaults.arxiv_weekly.llm_top_n`（デフォルト: 5）
+
 - **Google Alerts記事全文翻訳機能**: `google-alerts-translate` コマンドを追加。指定URLをJina AI Reader経由で取得し、`FullTextTranslator` で日本語化したうえでGoogle Alerts用Notion DBに反映する
   - 新規コンポーネント:
     - `minitools/scrapers/jina_reader.py` - `JinaReader`（`r.jina.ai` 取得、指数バックオフ、`Title:` / `Published Time:` メタデータ抽出）

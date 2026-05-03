@@ -30,6 +30,7 @@ flowchart TB
 
     subgraph Researchers["リサーチレイヤー"]
         TrendR["TrendResearcher"]
+        HFR["HFPapersResearcher"]
     end
 
     subgraph Scrapers["スクレイピングレイヤー"]
@@ -107,6 +108,7 @@ flowchart TB
     WDP --> DD
     AWP <--> LLMFactory
     AWP --> TrendR
+    AWP --> HFR
     DD <--> EmbFactory
     EmbFactory --> OllamaEmb
     EmbFactory --> OpenAIEmb
@@ -166,6 +168,7 @@ flowchart TB
 
     subgraph researchers["minitools/researchers/"]
         TrendR["TrendResearcher"]
+        HFR["HFPapersResearcher"]
     end
 
     subgraph publishers["minitools/publishers/"]
@@ -220,6 +223,7 @@ flowchart TB
     arxiv_weekly --> NR
     arxiv_weekly --> AWP
     arxiv_weekly --> TrendR
+    arxiv_weekly --> HFR
     arxiv_weekly --> SP
 
     x_trend --> XTC
@@ -507,7 +511,7 @@ page = client.pages.create(
 
 | ソース | Title | URL | Summary | その他 |
 |-------|-------|-----|---------|-------|
-| ArXiv | タイトル | URL | 日本語訳 | 公開日, 概要 |
+| ArXiv | タイトル | URL | 日本語訳 | 公開日, 概要, HF Upvotes (Number) |
 | Medium | Title | URL | Summary | Japanese Title, Author, Date, Claps (Number), Translated (Checkbox) |
 | Google Alerts | Title (日本語) | URL | Summary | Original Title, Source, Tags |
 
@@ -560,6 +564,30 @@ response = client.search(
 
 **必要な環境変数:**
 - `TAVILY_API_KEY`: Tavily APIキー（オプション、未設定時はトレンド調査をスキップ）
+
+### HuggingFace Papers API
+
+ArXiv週次ダイジェストで論文のコミュニティ注目度（upvote数・コメント数）を取得するために使用。
+
+**エンドポイント:** `GET https://huggingface.co/api/papers/{arxiv_id}`
+
+**特徴:**
+- 認証不要（公開API）
+- arXiv IDで直接検索可能
+- 未登録論文は404（upvotes=0として処理）
+
+**連携パターン:**
+```python
+from minitools.researchers import HFPapersResearcher
+
+async with HFPapersResearcher(max_concurrent=5) as researcher:
+    stats = await researcher.get_papers_stats(arxiv_ids)
+    # stats: {arxiv_id: HFPaperStats(upvotes, num_comments, found_on_hf)}
+```
+
+**レスポンスフィールド:**
+- `upvotes`: 論文のupvote数
+- `numComments`: コメント数
 
 ### TwitterAPI.io
 

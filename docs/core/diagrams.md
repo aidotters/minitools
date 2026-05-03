@@ -465,7 +465,7 @@ sequenceDiagram
     CLI-->>User: 処理完了
 ```
 
-### ArXiv Weekly Digest 処理フロー
+### ArXiv Weekly Digest 処理フロー（2層構成）
 
 ```mermaid
 sequenceDiagram
@@ -474,59 +474,71 @@ sequenceDiagram
     participant NR as NotionReader
     participant Notion as Notion DB
     participant AWP as ArxivWeeklyProcessor
+    participant HFR as HFPapersResearcher
+    participant HF as HuggingFace API
     participant TrendR as TrendResearcher
     participant Tavily as Tavily API
     participant LLM as LLM Client
     participant SP as SlackPublisher
     participant Slack
 
-    User->>CLI: arxiv-weekly --days 7 --top 10
+    User->>CLI: arxiv-weekly --days 7
 
     CLI->>NR: get_arxiv_papers_by_date_range(db_id, start, end)
     NR->>Notion: databases.query(filter=公開日)
     Notion-->>NR: pages[]
     NR-->>CLI: papers[]
 
-    CLI->>AWP: process(papers, top_n=10, use_trends=True)
+    CLI->>AWP: process(papers, use_trends=True, hf_top_n=5, llm_top_n=5)
 
-    Note over AWP: 1. トレンド調査
-    AWP->>TrendR: get_current_trends()
-    TrendR->>Tavily: search(query="AI trends", include_answer=True)
-    Tavily-->>TrendR: {answer, results}
-    TrendR-->>AWP: {summary, topics, sources}
+    Note over AWP: 1. HF統計取得 & トレンド調査（並列実行）
+    par 並列実行
+        AWP->>HFR: get_papers_stats(arxiv_ids)
+        loop 各論文（並列、max=5）
+            HFR->>HF: GET /api/papers/{arxiv_id}
+            alt 200 OK
+                HF-->>HFR: {upvotes, numComments}
+            else 404 (未登録)
+                HF-->>HFR: upvotes=0
+            end
+        end
+        HFR-->>AWP: stats_map
+
+        AWP->>TrendR: get_current_trends()
+        TrendR->>Tavily: search(query="AI trends")
+        Tavily-->>TrendR: {answer, results}
+        TrendR-->>AWP: {summary, topics}
+    end
 
     Note over AWP: 2. トレンドサマリー日本語化
     AWP->>LLM: generate(translate_prompt)
     LLM-->>AWP: japanese_trend_summary
 
-    Note over AWP: 3. 重要度スコアリング（バッチ処理）
-    AWP->>AWP: バッチ分割（20件ずつ）
+    Note over AWP: 3. セクション1: HF upvote上位を選出
+    AWP->>AWP: upvote > 0 をupvote降順ソート → 上位hf_top_n件
+
+    Note over AWP: 4. セクション2: LLMスコアリング（セクション1除外）
+    AWP->>AWP: セクション1を除外 → バッチ分割（20件ずつ）
     loop 各バッチ（並列、max=3）
         AWP->>LLM: chat_json(batch_importance_prompt with trends)
         alt バッチ処理成功
-            LLM-->>AWP: {results: [{index, technical_novelty, ...}, ...]}
+            LLM-->>AWP: {results: [{index, scores...}, ...]}
         else バッチ処理失敗
             Note over AWP: 個別処理にフォールバック
-            loop 各論文
-                AWP->>LLM: chat_json(importance_prompt with trends)
-                LLM-->>AWP: {technical_novelty, industry_impact, practicality, trend_relevance}
-            end
         end
     end
+    AWP->>AWP: スコア上位llm_top_n件を選出
 
-    Note over AWP: 4. 上位N件を選出
-    AWP->>AWP: sorted by importance_score
-
-    Note over AWP: 5. ハイライト生成
-    loop 各上位論文（並列、max=3）
+    Note over AWP: 5. ハイライト生成（両セクション）
+    loop 各選出論文（並列、max=3）
         AWP->>LLM: chat_json(highlights_prompt)
         LLM-->>AWP: {selection_reason, key_points}
     end
 
-    AWP-->>CLI: {trend_info, papers, total_papers}
+    AWP-->>CLI: {trend_info, papers, hf_papers, llm_papers, total_papers}
 
-    CLI->>SP: format_arxiv_weekly(start, end, papers, trend_summary)
-    SP-->>CLI: formatted_message
+    CLI->>SP: format_arxiv_weekly(start, end, papers, trend_summary, hf_papers, llm_papers)
+    SP-->>CLI: formatted_message (2セクション構成)
 
     alt Slack送信（非dry-run）
         CLI->>SP: send_message(message)
@@ -730,23 +742,46 @@ classDiagram
         -_generate_summary_from_results(results)
     }
 
+    class HFPaperStats {
+        <<dataclass>>
+        +str arxiv_id
+        +int upvotes
+        +int num_comments
+        +bool found_on_hf
+    }
+
+    class HFPapersResearcher {
+        +Semaphore semaphore
+        +ClientSession session
+        +__aenter__()
+        +__aexit__()
+        +get_paper_stats(arxiv_id) HFPaperStats
+        +get_papers_stats(arxiv_ids) dict
+    }
+
     class ArxivWeeklyProcessor {
         +BaseLLMClient llm
         +TrendResearcher trend_researcher
+        +HFPapersResearcher hf_researcher
         +int max_concurrent
         +int batch_size
         +rank_papers_by_importance(papers, trends)
         +select_top_papers(papers, top_n)
         +generate_paper_highlights(papers)
-        +process(papers, top_n, use_trends)
+        +process(papers, top_n, use_trends, hf_top_n, llm_top_n)
         -_translate_trend_summary(trend_info)
         -_safe_get_score(value, default)
         -_score_single(paper, trends)
         -_score_batch(papers, trends)
+        -_extract_arxiv_id(url)$
+        -_fetch_hf_stats(papers)
+        -_select_hf_top_papers(papers, hf_top_n)
     }
 
     DuplicateDetector --> UnionFind : uses
+    HFPapersResearcher ..> HFPaperStats : returns
     ArxivWeeklyProcessor --> TrendResearcher : uses
+    ArxivWeeklyProcessor --> HFPapersResearcher : uses
     ArxivWeeklyProcessor --> BaseLLMClient : uses
 
     class BaseLLMClient {
