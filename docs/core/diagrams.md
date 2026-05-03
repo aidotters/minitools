@@ -190,6 +190,100 @@ sequenceDiagram
     CLI-->>User: 処理完了サマリー
 ```
 
+### ArXiv 論文全文翻訳フロー
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as scripts/arxiv_translate.py
+    participant AS as ArxivScraper
+    participant Marker as marker-pdf
+    participant VPR as VlmParseRepairer
+    participant VLM as Multimodal LLM
+    participant FTT as FullTextTranslator
+    participant LLM as LLM Client
+    participant NBB as NotionBlockBuilder
+    participant NP as NotionPublisher
+    participant Notion
+
+    User->>CLI: arxiv-translate --url "https://arxiv.org/abs/..."
+
+    Note over CLI: Step 1: parse
+    CLI->>AS: __aenter__()
+    CLI->>AS: fetch_pdf(url)
+    AS-->>CLI: pdf_bytes
+    CLI->>AS: parse_to_markdown(pdf_bytes)
+    AS->>Marker: convert(pdf)
+    Marker-->>AS: markdown + images
+    AS-->>CLI: (raw.md, images)
+    CLI->>CLI: write raw.md, *.jpeg, metadata.json
+
+    alt VLM修復有効
+        CLI->>VPR: repair(raw_markdown)
+        VPR->>VPR: ParseErrorDetector.detect()
+        loop 各欠陥（Semaphore=2）
+            VPR->>VLM: generate_from_images(prompt, page_image)
+            VLM-->>VPR: 修復済みテキスト
+        end
+        VPR-->>CLI: RepairResult(applied=N, repaired_markdown)
+        opt applied > 0
+            CLI->>CLI: write repaired.md
+        end
+    end
+
+    Note over CLI: Step 2: translate
+    CLI->>FTT: translate(markdown)
+    Note over FTT: 見出し単位でチャンク分割
+    loop 各チャンク
+        FTT->>LLM: chat(translate_prompt)
+        LLM-->>FTT: translated_chunk
+    end
+    FTT-->>CLI: translated_markdown
+    CLI->>CLI: write translated.md
+
+    Note over CLI: Step 3: upload
+    alt not dry-run
+        loop 各画像（max=5並列）
+            CLI->>NP: upload_file(image_path)
+            NP->>Notion: POST /v1/file_uploads
+            Notion-->>NP: upload_url
+            NP->>Notion: PUT upload_url (multipart)
+            Notion-->>NP: file_upload_id
+            NP-->>CLI: file_upload_id
+        end
+        CLI->>NBB: build_blocks(translated_md, image_uploads)
+        NBB-->>CLI: blocks[]
+        CLI->>NP: create_page(database_id, properties, blocks)
+        NP->>Notion: pages.create()
+        Notion-->>NP: page_id
+        NP-->>CLI: page_id
+    end
+
+    CLI->>AS: __aexit__()
+    CLI-->>User: 処理完了
+```
+
+#### 出力ディレクトリ構造
+
+`arxiv-translate` は論文ごとに `outputs/arxiv_translate/{safe_id}/` フォルダを作成する。`safe_id` は arXiv ID (例: `2401.12345`) のドットをアンダースコアに置換したもの。
+
+```
+outputs/arxiv_translate/{safe_id}/
+├── {safe_id}.pdf           # PDF（識別性のため safe_id 維持）
+├── metadata.json           # PaperMetadata（arxiv_id, title, authors, published, abstract）
+├── raw.md                  # marker-pdf 出力（VLM 修復前）
+├── repaired.md             # VLM 修復後（applied > 0 のときのみ生成）
+├── translated.md           # 日本語訳（最終出力）
+├── _page_X_Figure_Y.jpeg   # PDF から抽出した画像（裸ファイル名で配置）
+├── _page_X_Picture_Y.jpeg  # marker-pdf の image refs と一致
+└── page_images/            # VLM 修復用ページレンダリングキャッシュ（PNG）
+```
+
+各ステップが書き込むファイル:
+- `parse`: `{safe_id}.pdf`, `metadata.json`, `raw.md`, `_page_*.jpeg`, `page_images/`, `repaired.md`
+- `translate`: `translated.md`
+- `upload`: 既存ファイルを参照のみ（書き込みなし）
+
 ### Google Alerts 処理フロー
 
 ```mermaid
@@ -702,6 +796,50 @@ classDiagram
         -_is_error_page()
     }
 
+    class PaperImage {
+        <<dataclass>>
+        +bytes data
+        +str filename
+        +str caption
+    }
+
+    class PaperMetadata {
+        <<dataclass>>
+        +str arxiv_id
+        +str title
+        +List~str~ authors
+        +str published
+        +str abstract
+    }
+
+    class PaperContent {
+        <<dataclass>>
+        +str markdown
+        +List~PaperImage~ images
+        +PaperMetadata metadata
+        +bytes pdf_bytes
+    }
+
+    class ArxivScraper {
+        +AsyncClient _client
+        +__aenter__()
+        +__aexit__()
+        +validate_arxiv_url(url)
+        +extract_arxiv_id(url)$
+        +fetch_pdf(url) bytes
+        +parse_to_markdown(pdf_data) tuple~str, List~PaperImage~~
+        +fetch_metadata(arxiv_id) PaperMetadata
+        +fetch_and_parse(url) PaperContent
+        -_convert_to_pdf_url(arxiv_url)
+        -_image_to_bytes(image_obj, filename)$
+    }
+
+    ArxivScraper ..> PaperContent : creates
+    ArxivScraper ..> PaperImage : creates
+    ArxivScraper ..> PaperMetadata : creates
+    PaperContent --> PaperImage
+    PaperContent --> PaperMetadata
+
     class MarkdownConverter {
         +convert(html)
         -_extract_article_body(soup)
@@ -718,6 +856,85 @@ classDiagram
         -_split_into_chunks(markdown)
         -_translate_chunk(chunk)
     }
+
+    class ParseDefect {
+        <<dataclass>>
+        +str kind
+        +int line_start
+        +int line_end
+        +int page_hint
+        +str excerpt
+        +str image_ref
+    }
+
+    class RepairResult {
+        <<dataclass>>
+        +List~ParseDefect~ detected
+        +int applied
+        +int skipped
+        +int errors
+        +Path output_path
+    }
+
+    class ParseErrorDetector {
+        +int SHORT_LINE_MAX_WORDS
+        +int MIN_RUN_LENGTH
+        +detect(markdown) List~ParseDefect~
+        -_detect_short_line_runs(lines)
+        -_detect_broken_tables(lines)
+        -_detect_continued_markers(lines)
+        -_detect_orphan_figures(lines)
+        -_merge_overlapping(defects)
+    }
+
+    class PdfPageRenderer {
+        +Path cache_dir
+        +int dpi
+        +render_pages(pdf_path, page_numbers) List~bytes~
+        -_render_sync(pdf_path, page_numbers)
+    }
+
+    class VlmRepairer {
+        +str provider
+        +str model
+        +BaseLLMClient client
+        +Semaphore semaphore
+        +repair_table(excerpt, images) str
+        +repair_figure(caption, images) str
+        -_call_with_retry(prompt, images)
+    }
+
+    class MarkdownPatcher {
+        +apply(markdown, defect, replacement) str
+        -_strip_code_fences(text)$
+        -_ensure_trailing_newline(text)$
+        -_validate_markdown_table(text)$
+    }
+
+    class VlmParseRepairer {
+        +str provider
+        +str model
+        +int max_pages_per_defect
+        +int max_total_calls
+        +bool repair_tables
+        +bool repair_figures
+        +int dpi
+        +ParseErrorDetector detector
+        +VlmRepairer repairer
+        +MarkdownPatcher patcher
+        +repair(raw_md_path, pdf_path, dry_run) RepairResult
+        -_apply_budget(defects)
+        -_repair_one(defect, ...)
+        -_extract_caption(markdown, defect)$
+    }
+
+    VlmParseRepairer --> ParseErrorDetector : uses
+    VlmParseRepairer --> PdfPageRenderer : uses
+    VlmParseRepairer --> VlmRepairer : uses
+    VlmParseRepairer --> MarkdownPatcher : uses
+    VlmParseRepairer ..> RepairResult : returns
+    ParseErrorDetector ..> ParseDefect : creates
+    VlmRepairer --> BaseLLMClient : uses
 
     class NotionBlockBuilder {
         +build_blocks(markdown)

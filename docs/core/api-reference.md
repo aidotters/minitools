@@ -542,7 +542,8 @@ LLMクライアントを取得するファクトリ関数。
 ```python
 def get_llm_client(
     provider: Optional[str] = None,
-    model: Optional[str] = None
+    model: Optional[str] = None,
+    thinking_level: Optional[str] = None,
 ) -> BaseLLMClient:
     """
     LLMクライアントを取得するファクトリ関数
@@ -554,12 +555,16 @@ def get_llm_client(
         provider: LLMプロバイダー名（"ollama", "openai", "gemini"）
                   省略時は設定ファイルから取得
         model: 使用するモデル名（省略時は各プロバイダーのデフォルトを使用）
+        thinking_level: Gemini 3系の思考深度（"minimal" / "low" / "medium" / "high"）。
+                        Gemini 利用時のみ有効、OpenAI / Ollama では無視。
+                        未指定時は ``llm.gemini.default_thinking_level`` 設定値、
+                        さらに省略時は ``minimal`` がデフォルト。
 
     Returns:
         LLMクライアントインスタンス
 
     Raises:
-        ValueError: 未対応のプロバイダーが指定された場合
+        ValueError: 未対応のプロバイダー、または不正な thinking_level
         LLMError: クライアントの初期化に失敗した場合
     """
 ```
@@ -574,8 +579,19 @@ client = get_llm_client()
 # プロバイダーとモデルを指定
 client = get_llm_client(provider="openai", model="gpt-4o")
 
-# Geminiプロバイダーを指定
-client = get_llm_client(provider="gemini", model="gemini-2.5-flash")
+# Geminiプロバイダーを指定（thinking_level でコスト/品質を調整）
+client = get_llm_client(
+    provider="gemini",
+    model="gemini-3.1-flash-lite-preview",
+    thinking_level="minimal",  # 翻訳・分類タスク向け
+)
+
+# VLM 修復のように精度重視のタスクは medium / high を選択
+client = get_llm_client(
+    provider="gemini",
+    model="gemini-3-flash-preview",
+    thinking_level="medium",
+)
 
 # 共通インターフェースで呼び出し
 response = await client.chat([
@@ -678,6 +694,22 @@ class BaseEmbeddingClient(ABC):
             Embeddingベクトル
         """
 ```
+
+---
+
+### EmbeddingClient 実装クラス
+
+`BaseEmbeddingClient` を継承する具体実装。
+
+**ファイル:** `minitools/llm/embeddings.py`
+
+| クラス | デフォルトモデル | 備考 |
+|--------|----------------|------|
+| `OllamaEmbeddingClient` | `nomic-embed-text` | ローカル Ollama サーバー（`OLLAMA_HOST` 環境変数で接続先指定可） |
+| `OpenAIEmbeddingClient` | `text-embedding-3-small` | OpenAI API 経由、`OPENAI_API_KEY` 必須 |
+| `GeminiEmbeddingClient` | `text-embedding-004` | `langchain-google-genai` 経由、`GEMINI_API_KEY` 必須。`embed_texts()`/`embed_text()` を非同期実装 |
+
+各クラスは `embed_texts(texts)` と `embed_text(text)` を実装し、内部で遅延初期化されたクライアントを利用する。失敗時は `EmbeddingError` を送出。
 
 ---
 
@@ -948,6 +980,105 @@ class MarkdownConverter:
 ```python
 converter = MarkdownConverter()
 markdown = converter.convert(html)
+```
+
+---
+
+### ArxivScraper
+
+ArXiv論文のPDFをダウンロードし、marker-pdfでMarkdown形式に変換するクラス。
+Playwright非依存（httpxベース）で動作する。
+
+**ファイル:** `minitools/scrapers/arxiv_scraper.py`
+
+**補助dataclass:**
+
+```python
+@dataclass
+class PaperImage:
+    """PDFから抽出した画像"""
+    filename: str       # marker-pdfが付与するファイル名（例: _page_0_Figure_5.jpeg）
+    data: bytes         # 画像バイト列
+    mime_type: str      # "image/jpeg" または "image/png"
+
+@dataclass
+class PaperMetadata:
+    """ArXiv APIから取得した論文メタデータ"""
+    arxiv_id: str
+    title: str
+    authors: list[str]
+    abstract: str
+    published: str      # YYYY-MM-DD
+    pdf_url: str
+    abs_url: str
+
+@dataclass
+class PaperContent:
+    """fetch_and_parse() の返り値"""
+    metadata: PaperMetadata
+    markdown: str       # marker-pdf 出力
+    images: list[PaperImage]
+```
+
+```python
+class ArxivScraper:
+    """ArXiv論文PDFをMarkdownに変換するクラス"""
+
+    async def __aenter__(self) -> "ArxivScraper":
+        """httpx.AsyncClientとmarker-pdfコンバーターを初期化"""
+
+    async def __aexit__(self, *args) -> None:
+        """HTTPクライアントをクローズ"""
+
+    def validate_arxiv_url(self, url: str) -> bool:
+        """ArXiv URL（abs/ or pdf/）の形式を検証"""
+
+    @staticmethod
+    def extract_arxiv_id(url: str) -> str | None:
+        """arXiv IDを抽出（例: 2401.12345 や 2401.12345v2）"""
+
+    async def fetch_pdf(self, url: str) -> bytes | None:
+        """
+        PDFをダウンロード（最大3回リトライ、指数バックオフ）
+
+        Args:
+            url: arXivのabs/またはpdf/URL
+
+        Returns:
+            PDFバイト列。失敗時はNone。
+        """
+
+    def parse_to_markdown(
+        self, pdf_data: bytes
+    ) -> tuple[str, list[PaperImage]]:
+        """
+        marker-pdfでPDF→Markdown変換し、画像も抽出
+
+        Returns:
+            (markdown文字列, 画像リスト)
+        """
+
+    async def fetch_metadata(self, arxiv_id: str) -> PaperMetadata | None:
+        """ArXiv APIからメタデータを取得（feedparser経由）"""
+
+    async def fetch_and_parse(self, url: str) -> PaperContent | None:
+        """
+        URL→PDFダウンロード→Markdown変換→メタデータ取得を一括実行
+
+        Returns:
+            PaperContent。いずれかのステップで失敗した場合はNone。
+        """
+```
+
+**使用例:**
+```python
+async with ArxivScraper() as scraper:
+    content = await scraper.fetch_and_parse("https://arxiv.org/abs/2401.12345")
+    if content:
+        print(content.metadata.title)
+        print(content.markdown[:500])
+        for img in content.images:
+            (output_dir / img.filename).write_bytes(img.data)
 ```
 
 ---
@@ -1312,6 +1443,115 @@ class FullTextTranslator:
 translator = FullTextTranslator(provider="gemini")
 translated_md = await translator.translate(markdown_text)
 ```
+
+---
+
+### VlmParseRepairer
+
+marker-pdfが生成したMarkdownのパース欠陥（壊れた表・孤立した図の参照など）を、
+multimodal LLM（Gemini / OpenAI）に該当ページの画像を渡して修復するクラス。
+`arxiv-translate parse` から呼び出される。
+
+**ファイル:** `minitools/processors/vlm_parse_repairer.py`
+
+**補助dataclass:**
+
+```python
+@dataclass
+class ParseDefect:
+    """検出されたパース欠陥"""
+    kind: str               # "broken_table" | "orphan_figure" など
+    page: int               # PDFページ番号（0始まり）
+    line_start: int         # Markdown内の開始行
+    line_end: int           # Markdown内の終了行
+    excerpt: str            # 該当行の抜粋
+    confidence: float       # 検出の信頼度
+
+@dataclass
+class RepairResult:
+    """修復結果"""
+    detected: int           # 検出された欠陥数
+    applied: int            # 実際に修復された数
+    repaired_markdown: str  # 修復後のMarkdown
+```
+
+**主要クラス:**
+
+| クラス | 役割 |
+|-------|------|
+| `ParseErrorDetector` | ヒューリスティックで欠陥を検出（LLMコストなし） |
+| `PdfPageRenderer` | PyMuPDFでページをPNGレンダリング、ディスクキャッシュあり |
+| `VlmRepairer` | VLMで表再構築 / 図の日本語要約を生成（Semaphore=2、3回リトライ） |
+| `MarkdownPatcher` | 検証付きでMarkdownを置換（idempotent） |
+| `VlmParseRepairer` | 上記4つを統合する高レベルAPI |
+
+```python
+class VlmParseRepairer:
+    """marker-pdfパース欠陥のVLM修復オーケストレーター"""
+
+    def __init__(
+        self,
+        llm_client: BaseLLMClient,
+        pdf_path: Path,
+        page_image_dir: Path,
+        max_total_calls: int = 30,
+        max_dpi: int = 200,
+    ):
+        """
+        Args:
+            llm_client: multimodal対応LLMクライアント（generate_from_imagesが必須）
+            pdf_path: 元のPDFファイルパス
+            page_image_dir: ページ画像のキャッシュディレクトリ
+            max_total_calls: VLM呼び出しの総回数上限（コスト制御）
+            max_dpi: ページレンダリングの最大DPI
+        """
+
+    async def repair(
+        self,
+        markdown: str,
+        dry_run: bool = False,
+    ) -> RepairResult:
+        """
+        Markdownを検査して欠陥を検出し、VLMで修復する
+
+        Args:
+            markdown: marker-pdf出力のMarkdown
+            dry_run: Trueの場合は検出のみ実行、修復は行わない
+
+        Returns:
+            RepairResult（検出数・適用数・修復後Markdown）
+        """
+```
+
+**使用例:**
+```python
+from minitools.llm import get_llm_client
+from minitools.processors.vlm_parse_repairer import VlmParseRepairer
+
+llm = get_llm_client(
+    provider="gemini",
+    model="gemini-3-flash-preview",
+    thinking_level="medium",
+)
+repairer = VlmParseRepairer(
+    llm_client=llm,
+    pdf_path=Path("paper.pdf"),
+    page_image_dir=Path("outputs/.../page_images"),
+    max_total_calls=30,
+)
+result = await repairer.repair(markdown)
+print(f"detected={result.detected}, applied={result.applied}")
+```
+
+**設定キー (settings.yaml):**
+
+| キー | デフォルト | 説明 |
+|------|-----------|-----|
+| `defaults.arxiv_translate.vlm_repair.enabled` | `true` | 全体の有効/無効 |
+| `defaults.arxiv_translate.vlm_repair.provider` | `gemini` | 使用するVLMプロバイダ |
+| `defaults.arxiv_translate.vlm_repair.model` | `gemini-3-flash-preview` | モデル名（精度重視） |
+| `defaults.arxiv_translate.vlm_repair.thinking_level` | `medium` | 図表理解のための思考深度 |
+| `defaults.arxiv_translate.vlm_repair.max_total_calls` | `30` | 1論文あたりのVLM呼び出し上限 |
 
 ---
 

@@ -84,12 +84,16 @@ def _get_openai_client(model: Optional[str] = None) -> BaseLLMClient:
             )
 
 
-def _get_gemini_client(model: Optional[str] = None) -> BaseLLMClient:
+def _get_gemini_client(
+    model: Optional[str] = None,
+    thinking_level: Optional[str] = None,
+) -> BaseLLMClient:
     """
     Geminiクライアントを取得（LangChain経由）
 
     Args:
         model: 使用するモデル名
+        thinking_level: Gemini 3系の思考深度（"minimal" / "low" / "medium" / "high"）
 
     Returns:
         LLMクライアントインスタンス
@@ -98,7 +102,7 @@ def _get_gemini_client(model: Optional[str] = None) -> BaseLLMClient:
         from minitools.llm.langchain_gemini import LangChainGeminiClient
 
         logger.debug("Using LangChain Gemini client")
-        return LangChainGeminiClient(model=model)
+        return LangChainGeminiClient(model=model, thinking_level=thinking_level)
     except ImportError as e:
         raise LLMError(
             f"langchain-google-genai not available ({e}). "
@@ -109,6 +113,7 @@ def _get_gemini_client(model: Optional[str] = None) -> BaseLLMClient:
 def get_llm_client(
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    thinking_level: Optional[str] = None,
 ) -> BaseLLMClient:
     """
     LLMクライアントを取得するファクトリ関数
@@ -119,6 +124,8 @@ def get_llm_client(
         provider: LLMプロバイダー名（"ollama", "openai", "gemini"）
                   省略時は設定ファイルから取得
         model: 使用するモデル名（省略時は各プロバイダーのデフォルトを使用）
+        thinking_level: Gemini 3系の思考深度。Gemini 利用時のみ有効
+                        （OpenAI / Ollama では無視）
 
     Returns:
         LLMクライアントインスタンス
@@ -130,7 +137,10 @@ def get_llm_client(
     config = get_config()
     use_provider = provider or config.get("llm.provider", "ollama")
 
-    logger.info(f"Creating LLM client: provider={use_provider}, model={model}")
+    logger.info(
+        f"Creating LLM client: provider={use_provider}, model={model}, "
+        f"thinking_level={thinking_level}"
+    )
 
     if use_provider == "ollama":
         return _get_ollama_client(model=model)
@@ -145,7 +155,7 @@ def get_llm_client(
             return _get_ollama_client(model=model)
 
     elif use_provider == "gemini":
-        return _get_gemini_client(model=model)
+        return _get_gemini_client(model=model, thinking_level=thinking_level)
 
     else:
         raise ValueError(

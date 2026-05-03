@@ -134,9 +134,14 @@ async def process_article(
 
 async def main_async(args):
     """メイン処理（非同期版）"""
+    config = get_config()
     # コンポーネントの初期化
     converter = MarkdownConverter()
-    translator = FullTextTranslator(provider=args.provider)
+    translator = FullTextTranslator(
+        provider=args.provider,
+        model=config.get("defaults.medium.translate_model"),
+        thinking_level=config.get("defaults.medium.translate_thinking_level"),
+    )
     block_builder = NotionBlockBuilder()
 
     # Notion設定（dry-runでない場合のみ）

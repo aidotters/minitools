@@ -284,7 +284,13 @@ async def main_async():
             )
             if database_id:
                 converter = MarkdownConverter()
-                ft_translator = FullTextTranslator(provider=args.provider)
+                ft_translator = FullTextTranslator(
+                    provider=args.provider,
+                    model=config.get("defaults.medium.translate_model"),
+                    thinking_level=config.get(
+                        "defaults.medium.translate_thinking_level"
+                    ),
+                )
                 block_builder = NotionBlockBuilder()
                 notion_pub = NotionPublisher(source_type="medium")
 

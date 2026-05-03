@@ -6,7 +6,7 @@
 ## 前提
 
 - `.env` に `GEMINI_API_KEY` が設定済（既定 provider）
-- `settings.yaml` で `arxiv_translate.vlm_repair.enabled: true`
+- `settings.yaml` で `defaults.arxiv_translate.vlm_repair.enabled: true`
 - 1 論文あたりの想定コスト: Gemini 2.5 Flash で $0.05 以下
 - 想定追加処理時間: +60 秒以内（10 ページ規模）
 
@@ -140,7 +140,7 @@ time uv run arxiv-translate parse --url "https://arxiv.org/abs/2602.12670"
 
 ## 関連
 
-- 設定: `settings.yaml` の `arxiv_translate.vlm_repair`
+- 設定: `settings.yaml` の `defaults.arxiv_translate.vlm_repair`
 - 実装: `minitools/processors/vlm_parse_repairer.py`
 - ユニットテスト: `tests/test_vlm_parse_repairer.py`
 - スペック: `.steering/20260425-vlm-parse-error-repair/`

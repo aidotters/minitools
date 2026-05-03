@@ -4,26 +4,105 @@
 
 ## [Unreleased]
 
+### Changed
+- **`arxiv_translate.vlm_repair.*` 設定キーを `defaults.arxiv_translate.vlm_repair.*` に統一** (2026-05-03)
+  - 旧: トップレベル `arxiv_translate.vlm_repair.*` を `scripts/arxiv_translate.py:_build_repairer()` が直接参照
+  - 新: `defaults.arxiv_translate.vlm_repair.*` 配下に統一（他の用途別設定キー命名と整合）
+  - **既存ユーザの移行手順**: `settings.yaml` のトップレベル `arxiv_translate:` セクション配下の `vlm_repair:` ブロックを、`defaults.arxiv_translate:` 配下に移動する。例:
+    ```yaml
+    # Before
+    arxiv_translate:
+      vlm_repair:
+        enabled: true
+        model: "gemini-3-flash-preview"
+        ...
+
+    # After
+    defaults:
+      arxiv_translate:
+        translate_provider: gemini
+        translate_model: "gemini-3.1-flash-lite-preview"
+        ...
+        vlm_repair:
+          enabled: true
+          model: "gemini-3-flash-preview"
+          ...
+    ```
+  - 影響: 旧キーは読み込まれなくなる。移行しない場合 `langchain_gemini.py` のフォールバック値（`gemini-3.1-flash-lite-preview` + `minimal`）が使われ VLM 修復精度が低下する
+  - `settings.yaml.example` は既に `defaults.arxiv_translate.vlm_repair.*` で記述されており変更なし
+
+- **Gemini 3.1 Flash-Lite Preview への移行と用途別 `thinking_level` 対応** (2026-05-02)
+  - `LangChainGeminiClient` に `thinking_level: Optional[str]` 引数を追加
+    - `_get_chat_model()` の `model_kwargs` を `thinking_config: {thinking_level: ...}` に変更（旧 `thinking_budget: 0` ハードコードを廃止）
+    - JSON モード（`chat_json`）でも同じ `thinking_config` を継承
+    - 不正値（`minimal` / `low` / `medium` / `high` 以外）は `ValueError`
+    - 未指定時は `llm.gemini.default_thinking_level` → `minimal` の順でフォールバック（Gemini 3 Flash/Pro の高コストデフォルト挙動を回避）
+  - `get_llm_client()` / `_get_gemini_client()` に `thinking_level` 引数を追加（OpenAI / Ollama 経路では無視）
+  - `FullTextTranslator` / `VlmRepairer` / `VlmParseRepairer` に `thinking_level` 引数を追加し、`get_llm_client()` まで伝搬
+  - `scripts/arxiv_translate.py:_build_repairer()` / 新規ヘルパー `_build_translator()` で設定値から読み出し
+  - `scripts/medium_translate.py` / `scripts/google_alerts_translate.py` でも各機能セクションから読み出し
+  - 設定変更:
+    - `llm.gemini.default_model`: `gemini-2.5-flash` → `gemini-3.1-flash-lite-preview`
+    - `llm.gemini.default_thinking_level`: 新規（`minimal`）
+    - `defaults.arxiv_translate.translate_model` / `translate_thinking_level`: 新規（`gemini-3.1-flash-lite-preview` / `minimal`）
+    - `arxiv_translate.vlm_repair.model`: `gemini-2.5-flash` → `gemini-3-flash-preview`（精度重視）
+    - `arxiv_translate.vlm_repair.thinking_level`: 新規（`medium`）
+    - `defaults.medium.translate_model` / `translate_thinking_level`: Gemini 3.1 Flash-Lite + minimal に更新
+  - 効果: 翻訳タスクのコスト削減と思考レベルの明示的制御による想定外コスト発生防止
+  - 追加修正: Gemini 3 系のレスポンス `content` が parts list 形式（``[{"type": "text", "text": "..."}]``）になる挙動に対応する `_extract_text()` ヘルパーを追加し、`chat()` / `chat_json()` / `generate_from_images()` で利用。Gemini 2.x の str 形式とも後方互換
+
 ### Added
+- **Google Alerts記事全文翻訳機能**: `google-alerts-translate` コマンドを追加。指定URLをJina AI Reader経由で取得し、`FullTextTranslator` で日本語化したうえでGoogle Alerts用Notion DBに反映する
+  - 新規コンポーネント:
+    - `minitools/scrapers/jina_reader.py` - `JinaReader`（`r.jina.ai` 取得、指数バックオフ、`Title:` / `Published Time:` メタデータ抽出）
+    - `scripts/google_alerts_translate.py` - CLIスクリプト（`process_url` / `build_new_page_metadata` / `build_new_page_properties` / `ensure_translated_property`）
+  - 既存ページ（`Translated == false`）は本文末尾に divider を挟んで翻訳ブロックを追記し、`Translated` を `true` に更新（A 案）
+  - 新規ページは `Translated: True` を含む properties を `create_page` 1 回で書き込み、追加の `update_page_properties` を不要化
+  - DBスキーマ事前チェック: `Translated` (checkbox) プロパティ未追加の DB に対しては起動時にエラー終了（手動マイグレーション運用）
+  - 設定: `defaults.google_alerts.translate_provider`（`settings.yaml`）
+
+- **ArXiv論文全文翻訳機能**: `arxiv-translate` コマンドを追加。arXiv論文PDFをダウンロードし、marker-pdfでMarkdownに変換、LLMで日本語翻訳してNotionに保存
+  - 新規コンポーネント:
+    - `minitools/scrapers/arxiv_scraper.py` - `ArxivScraper`（httpx PDFダウンロード + marker-pdf変換 + ArXiv APIメタデータ取得）
+    - 補助dataclass: `PaperImage`, `PaperMetadata`, `PaperContent`
+    - `scripts/arxiv_translate.py` - CLIスクリプト（`parse` / `translate` / `upload` / `repair` サブコマンド対応）
+  - `FullTextTranslator` 拡張: arXiv向けに強化（DO NOT TRANSLATEマーカー対応、テーブルブロックのマージ、外側コードフェンス除去、切り詰め検出）
+  - 数式の保持: インライン `$...$` とブロック `$$...$$`（marker-pdfネイティブサポート）
+  - 出力構造: 論文ごとに `outputs/arxiv_translate/{safe_id}/` フォルダを作成（`{safe_id}.pdf`, `metadata.json`, `raw.md`, `repaired.md`, `translated.md`, 画像, `page_images/`）
+  - 新規依存: `marker-pdf>=1.10.0`（surya OCRモデルの最新APIと安定したMarkdown出力フォーマットを採用したバージョン）、`pymupdf>=1.24.0`（VLM修復用のページレンダリングで利用する `Page.get_pixmap()` の引数互換を確保するバージョン）、`opencv-python-headless>=4.11.0.86`（marker-pdf の依存解決で要求されるバージョン下限。GUI 不要のヘッドレス版を採用しコンテナサイズを抑制）
+
+- **VLMによるmarker-pdfパース欠陥修復機能**: multimodal LLM を使い、壊れた表や孤立した図参照を該当ページの画像から再構築する
+  - 新規コンポーネント: `minitools/processors/vlm_parse_repairer.py`
+    - `ParseDefect` / `RepairResult` dataclass
+    - `ParseErrorDetector` - ヒューリスティック検出（壊れた表・短行ラン・継続マーカー・孤立図、LLMコストなし）
+    - `PdfPageRenderer` - PyMuPDFベースのPNGレンダリング、ディスクキャッシュ対応
+    - `VlmRepairer` - VLMによる表再構築 + 図の日本語要約生成（Semaphore=2、最大3回リトライ）
+    - `MarkdownPatcher` - 検証付きin-place置換（idempotent）
+    - `VlmParseRepairer` - オーケストレーター
+  - `arxiv-translate parse` サブコマンドに統合、`--no-vlm-repair` でスキップ可能
+  - 単独実行: `arxiv-translate repair --url ... [--dry-run]`
+  - 設定キー: `arxiv_translate.vlm_repair.{enabled,provider,model,max_total_calls,...}`
+
+- **multimodal LLMサポート**: `BaseLLMClient.generate_from_images()` を追加
+  - Gemini / OpenAI クライアントは `HumanMessage` の content list 形式で画像とプロンプトを送信
+  - Ollama / 未対応プロバイダはデフォルト実装（warning + 空文字列）
+
+- **Notion画像アップロード機能**: `NotionPublisher.upload_file()` を追加
+  - 2段階API呼び出し: `POST /v1/file_uploads` で `upload_url` 取得 → multipart/form-data で画像送信（3回リトライ）
+  - 5MB超の画像はwarningログを出力してNoneを返す
+  - mime_typeはNone時に `mimetypes.guess_type()` で推定
+  - `NotionBlockBuilder.build_blocks()` 拡張: `image_uploads` 引数（ローカルファイル名→file_upload_idマッピング）でローカル画像を `file_upload` 型ブロックとして埋め込み可能
+
+- **NotionBlockBuilder の数式・テーブル対応**: ArXiv論文のMarkdown表現に対応
+  - ブロック数式 (`$$...$$`) → Notion `equation` ブロック
+  - インライン数式 (`$...$`) → rich_text内の `equation`、エスケープ `\$` は通常文字
+  - Markdownテーブル → Notion `table` ブロック
+
 - **X フォロー中アカウント一覧取得ユーティリティ**: `x-followings` コマンドを追加
   - `scripts/x_followings.py` - フォロー中アカウント一覧を取得
   - `--user`（必須）、`--limit`、`--format`（list/yaml）オプション
   - `settings.yaml`の`watch_accounts`設定用にYAML出力可能
 
-### Changed
-- **X トレンドダイジェスト Slack送信の省略撤廃**: 3000文字制限・省略ロジックを撤廃し、全内容を送信するように変更
-  - `format_x_trend_digest_sections()` 追加: セクションごとの `list[str]` を返す新メソッド
-  - `format_x_trend_digest()` を後方互換ラッパーに変更（内部で sections を結合）
-  - `send_messages()` 追加: 複数メッセージを順番に送信（0.5秒間隔）
-  - `scripts/x_trend.py`: セクション分割送信に対応、dry-run時はセクション番号付き表示
-
-### Fixed
-- **XTrendCollector APIレスポンスパーシング修正**: TwitterAPI.ioのレスポンス構造がネスト形式（`{"status": "success", "data": {"tweets": [...]}}`）であることに対応
-  - `_parse_tweets()`: `data.data.tweets` のネスト構造に対応（従来は `data.tweets` のフラット構造のみ対応）
-  - `get_trends()`: 同様にネスト構造対応を追加
-  - テストのサンプルレスポンスを実際のAPI構造に合わせて更新
-
-### Added
 - **X (Twitter) AI トレンドダイジェスト v2**: キーワード検索とユーザータイムライン監視を追加し、3ソース構成に拡張
   - 新規データクラス: `KeywordSearchResult`, `UserTimelineResult`, `CollectResult`, `KeywordSummary`, `TimelineSummary`, `ProcessResult`
   - XTrendCollector拡張: `search_by_keyword()`, `get_user_timeline()`, `collect_keywords()`, `collect_timelines()`, `collect_all()`
@@ -43,18 +122,6 @@
   - 新規環境変数: `TWITTER_API_IO_KEY`, `SLACK_X_TIMELINE_SUMMARY_WEBHOOK_URL`
   - 設定項目: `defaults.x_trend.max_trends`, `defaults.x_trend.tweets_per_trend`, `defaults.x_trend.provider`
 
-### Changed
-- **週次ダイジェストスクリプトのリネーム**: `scripts/weekly_digest.py` → `scripts/google_alert_weekly_digest.py`
-  - CLIコマンド: `weekly-digest` → `google-alert-weekly-digest`
-  - 目的: Google Alerts専用であることを明確化
-- **`find_page_by_url()` の返り値変更**: `Optional[str]` → `Optional[PageInfo]`
-  - `PageInfo` NamedTuple（`page_id: str`, `is_translated: bool`）を返すように変更
-  - 既存のNotionクエリ結果から `Translated` チェックボックスの状態を取得（追加APIコール不要）
-- **全文翻訳の重複防止**: 翻訳済み記事のスキップ機能を追加
-  - `scripts/medium.py --translate`: Notionページ検索をスクレイピング前に移動し、`Translated`チェック済みの場合は翻訳処理全体をスキップ
-  - `scripts/medium_translate.py`: 同様に`Translated`チェック済みの場合はNotionへの追記をスキップ
-
-### Added
 - **Medium Claps数の出力**: NotionデータベースとSlack通知にClaps（拍手数）を追加
   - Notion: `Claps` (Number型) プロパティとして保存、フィルタ・ソート可能
   - Slack: 著者名の下に👏アイコン付きでカンマ区切り表示（0の場合は非表示）
@@ -122,7 +189,27 @@
   - 新規環境変数: `NOTION_GOOGLE_ALERTS_DATABASE_ID`, `SLACK_WEEKLY_DIGEST_WEBHOOK_URL`
 
 ### Changed
+- **X トレンドダイジェスト Slack送信の省略撤廃**: 3000文字制限・省略ロジックを撤廃し、全内容を送信するように変更
+  - `format_x_trend_digest_sections()` 追加: セクションごとの `list[str]` を返す新メソッド
+  - `format_x_trend_digest()` を後方互換ラッパーに変更（内部で sections を結合）
+  - `send_messages()` 追加: 複数メッセージを順番に送信（0.5秒間隔）
+  - `scripts/x_trend.py`: セクション分割送信に対応、dry-run時はセクション番号付き表示
+- **週次ダイジェストスクリプトのリネーム**: `scripts/weekly_digest.py` → `scripts/google_alert_weekly_digest.py`
+  - CLIコマンド: `weekly-digest` → `google-alert-weekly-digest`
+  - 目的: Google Alerts専用であることを明確化
+- **`find_page_by_url()` の返り値変更**: `Optional[str]` → `Optional[PageInfo]`
+  - `PageInfo` NamedTuple（`page_id: str`, `is_translated: bool`）を返すように変更
+  - 既存のNotionクエリ結果から `Translated` チェックボックスの状態を取得（追加APIコール不要）
+- **全文翻訳の重複防止**: 翻訳済み記事のスキップ機能を追加
+  - `scripts/medium.py --translate`: Notionページ検索をスクレイピング前に移動し、`Translated`チェック済みの場合は翻訳処理全体をスキップ
+  - `scripts/medium_translate.py`: 同様に`Translated`チェック済みの場合はNotionへの追記をスキップ
 - ruff による静的解析チェックを追加 (bf4f777)
+
+### Fixed
+- **XTrendCollector APIレスポンスパーシング修正**: TwitterAPI.ioのレスポンス構造がネスト形式（`{"status": "success", "data": {"tweets": [...]}}`）であることに対応
+  - `_parse_tweets()`: `data.data.tweets` のネスト構造に対応（従来は `data.tweets` のフラット構造のみ対応）
+  - `get_trends()`: 同様にネスト構造対応を追加
+  - テストのサンプルレスポンスを実際のAPI構造に合わせて更新
 
 ### Removed
 - **レガシードキュメントの削除**: 以下のドキュメントを削除し、`docs/core/` に統合

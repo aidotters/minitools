@@ -16,6 +16,37 @@ from minitools.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Gemini 3系で導入された thinking_level の許容値。
+# Gemini 3系の Flash / Pro モデルは未指定時 high がデフォルトのため、
+# 想定外コスト発生を避けるため本クライアントでは未指定時 minimal を既定とする。
+_VALID_THINKING_LEVELS = {"minimal", "low", "medium", "high"}
+_DEFAULT_THINKING_LEVEL = "minimal"
+
+
+def _extract_text(content: Any) -> str:
+    """ChatGoogleGenerativeAI の response.content からテキストを抽出する
+
+    Gemini 3 系では `content` が parts list 形式（``[{"type": "text", "text": "...", ...}]``）
+    で返ることがある。Gemini 2.x 互換の単純な str も扱えるよう吸収する。
+    """
+    if not content:
+        return ""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: List[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                # LangChain は parts を {"type": "text", "text": "..."} 形式で返す
+                text = part.get("text")
+                if text:
+                    parts.append(str(text))
+        return "".join(parts).strip()
+    # 想定外の型は文字列化（旧挙動互換）
+    return str(content).strip()
+
 
 def _convert_messages(messages: List[Dict[str, str]]) -> List[BaseMessage]:
     """辞書形式のメッセージをLangChain形式に変換"""
@@ -37,14 +68,22 @@ def _convert_messages(messages: List[Dict[str, str]]) -> List[BaseMessage]:
 class LangChainGeminiClient(BaseLLMClient):
     """LangChainを使用したGoogle Gemini LLMクライアント"""
 
-    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        thinking_level: Optional[str] = None,
+    ):
         """
         Args:
             api_key: Google AI Studio APIキー（省略時は環境変数から取得）
             model: 使用するGeminiモデル名（省略時は設定ファイルから取得）
+            thinking_level: Gemini 3系の思考深度（"minimal" / "low" / "medium" / "high"）。
+                省略時は ``llm.gemini.default_thinking_level`` 設定値、
+                さらに省略時は ``minimal`` がデフォルト。
 
         Raises:
-            ValueError: APIキーが設定されていない場合
+            ValueError: APIキーが設定されていない場合、または不正な thinking_level
         """
         resolved_api_key = (
             api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
@@ -57,11 +96,23 @@ class LangChainGeminiClient(BaseLLMClient):
 
         config = get_config()
         self.default_model = model or config.get(
-            "llm.gemini.default_model", "gemini-2.5-flash"
+            "llm.gemini.default_model", "gemini-3.1-flash-lite-preview"
         )
+
+        resolved_thinking_level = thinking_level or config.get(
+            "llm.gemini.default_thinking_level", _DEFAULT_THINKING_LEVEL
+        )
+        if resolved_thinking_level not in _VALID_THINKING_LEVELS:
+            raise ValueError(
+                f"Invalid thinking_level: {resolved_thinking_level}. "
+                f"Must be one of: {', '.join(sorted(_VALID_THINKING_LEVELS))}"
+            )
+        self.thinking_level: str = resolved_thinking_level
+
         self._chat_model: Optional[ChatGoogleGenerativeAI] = None
         logger.debug(
-            f"LangChainGeminiClient initialized with model: {self.default_model}"
+            f"LangChainGeminiClient initialized "
+            f"(model={self.default_model}, thinking_level={self.thinking_level})"
         )
 
     def _get_chat_model(
@@ -69,6 +120,8 @@ class LangChainGeminiClient(BaseLLMClient):
     ) -> ChatGoogleGenerativeAI:
         """ChatGoogleGenerativeAIインスタンスを取得"""
         use_model = model or self.default_model
+
+        thinking_config = {"thinking_level": self.thinking_level}
 
         if json_mode:
             return ChatGoogleGenerativeAI(
@@ -78,7 +131,7 @@ class LangChainGeminiClient(BaseLLMClient):
                 max_output_tokens=65536,
                 model_kwargs={
                     "response_mime_type": "application/json",
-                    "thinking_config": {"thinking_budget": 0},
+                    "thinking_config": thinking_config,
                 },
             )
 
@@ -90,7 +143,7 @@ class LangChainGeminiClient(BaseLLMClient):
             google_api_key=self.api_key,
             convert_system_message_to_human=True,
             max_output_tokens=65536,
-            model_kwargs={"thinking_config": {"thinking_budget": 0}},
+            model_kwargs={"thinking_config": thinking_config},
         )
         return self._chat_model
 
@@ -105,8 +158,7 @@ class LangChainGeminiClient(BaseLLMClient):
             langchain_messages = _convert_messages(messages)
 
             response = await chat_model.ainvoke(langchain_messages)
-            content = response.content
-            result = str(content).strip() if content else ""
+            result = _extract_text(response.content)
             logger.debug(f"LangChain Gemini response: {result[:100]}...")
             return result
 
@@ -145,7 +197,7 @@ class LangChainGeminiClient(BaseLLMClient):
             message = HumanMessage(content=content)  # type: ignore[arg-type]
 
             response = await chat_model.ainvoke([message])
-            result = str(response.content).strip() if response.content else ""
+            result = _extract_text(response.content)
             logger.debug(f"LangChain Gemini multimodal response: {result[:100]}...")
             return result
 
@@ -164,8 +216,7 @@ class LangChainGeminiClient(BaseLLMClient):
             langchain_messages = _convert_messages(messages)
 
             response = await chat_model.ainvoke(langchain_messages)
-            content = response.content
-            result = str(content).strip() if content else ""
+            result = _extract_text(response.content)
             logger.debug(f"LangChain Gemini JSON response: {result[:100]}...")
             return result
 

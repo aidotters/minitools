@@ -734,3 +734,43 @@ class TestVlmParseRepairer:
         assert result == ""
         # VLM は呼ばれない
         assert not client.calls
+
+
+class TestVlmRepairerThinkingLevel:
+    """VlmRepairer / VlmParseRepairer の thinking_level 伝搬テスト"""
+
+    def test_vlm_repairer_uses_configured_thinking_level(self):
+        """VlmRepairer 構築時に thinking_level が get_llm_client に渡される"""
+        from unittest.mock import MagicMock, patch
+
+        with patch(
+            "minitools.processors.vlm_parse_repairer.get_llm_client"
+        ) as mock_factory:
+            mock_factory.return_value = MagicMock()
+            VlmRepairer(
+                provider="gemini",
+                model="gemini-3-flash-preview",
+                thinking_level="medium",
+            )
+            kwargs = mock_factory.call_args.kwargs
+            assert kwargs["provider"] == "gemini"
+            assert kwargs["model"] == "gemini-3-flash-preview"
+            assert kwargs["thinking_level"] == "medium"
+
+    def test_vlm_parse_repairer_propagates_thinking_level(self):
+        """VlmParseRepairer から VlmRepairer まで thinking_level が伝搬する"""
+        from unittest.mock import MagicMock, patch
+
+        with patch(
+            "minitools.processors.vlm_parse_repairer.get_llm_client"
+        ) as mock_factory:
+            mock_factory.return_value = MagicMock()
+            parent = VlmParseRepairer(
+                provider="gemini",
+                model="gemini-3-flash-preview",
+                thinking_level="medium",
+            )
+            assert parent.thinking_level == "medium"
+            assert parent.repairer.thinking_level == "medium"
+            kwargs = mock_factory.call_args.kwargs
+            assert kwargs["thinking_level"] == "medium"
