@@ -181,3 +181,129 @@ class TestSlackPublisherArxivWeekly:
 
         # PDFリンクが含まれている
         assert "pdf" in message.lower() or "PDF" in message
+
+
+class TestSlackPublisherArxivWeeklyTwoTier:
+    """SlackPublisher.format_arxiv_weekly() 2セクション構成のテスト"""
+
+    @pytest.fixture
+    def hf_papers(self):
+        return [
+            {
+                "title": "HF Popular Paper 1",
+                "hf_upvotes": 100,
+                "hf_comments": 10,
+                "selection_reason": "HFで最も人気",
+                "key_points": ["ポイント1"],
+                "url": "https://arxiv.org/abs/2601.00001",
+            },
+            {
+                "title": "HF Popular Paper 2",
+                "hf_upvotes": 50,
+                "hf_comments": 3,
+                "selection_reason": "HFで2番目に人気",
+                "key_points": ["ポイント2"],
+                "url": "https://arxiv.org/abs/2601.00002",
+            },
+        ]
+
+    @pytest.fixture
+    def llm_papers(self):
+        return [
+            {
+                "title": "LLM Scored Paper 1",
+                "importance_score": 9.0,
+                "selection_reason": "LLMが高評価",
+                "key_points": ["ポイントA"],
+                "url": "https://arxiv.org/abs/2601.00003",
+            },
+        ]
+
+    def test_two_tier_format(self, hf_papers, llm_papers):
+        """2セクション構成の基本フォーマットテスト"""
+        publisher = SlackPublisher()
+        message = publisher.format_arxiv_weekly(
+            start_date="2026-04-01",
+            end_date="2026-04-07",
+            papers=[],
+            hf_papers=hf_papers,
+            llm_papers=llm_papers,
+        )
+
+        assert "HuggingFace Upvotes" in message
+        assert "LLMスコア" in message
+        assert "100 upvotes" in message
+        assert "10 comments" in message
+        assert "9.0/10" in message
+
+    def test_two_tier_hf_only(self, hf_papers):
+        """HFセクションのみ"""
+        publisher = SlackPublisher()
+        message = publisher.format_arxiv_weekly(
+            start_date="2026-04-01",
+            end_date="2026-04-07",
+            papers=[],
+            hf_papers=hf_papers,
+            llm_papers=[],
+        )
+
+        assert "HuggingFace Upvotes" in message
+        assert "LLMスコア" not in message
+
+    def test_two_tier_llm_only(self, llm_papers):
+        """LLMセクションのみ"""
+        publisher = SlackPublisher()
+        message = publisher.format_arxiv_weekly(
+            start_date="2026-04-01",
+            end_date="2026-04-07",
+            papers=[],
+            hf_papers=[],
+            llm_papers=llm_papers,
+        )
+
+        assert "HuggingFace Upvotes" not in message
+        assert "LLMスコア" in message
+
+    def test_two_tier_message_length_limit(self):
+        """2セクション構成でも3000文字制限"""
+        hf_papers = [
+            {
+                "title": f"HF Paper {i} with very long title description",
+                "hf_upvotes": 100 - i,
+                "hf_comments": 5,
+                "selection_reason": "A" * 100,
+                "key_points": ["B" * 30, "C" * 30, "D" * 30],
+                "url": f"https://arxiv.org/abs/2601.{i:05d}",
+            }
+            for i in range(20)
+        ]
+        publisher = SlackPublisher()
+        message = publisher.format_arxiv_weekly(
+            start_date="2026-04-01",
+            end_date="2026-04-07",
+            papers=[],
+            hf_papers=hf_papers,
+            llm_papers=[],
+        )
+        assert len(message) <= 3000
+
+    def test_backward_compatible_without_hf_llm(self):
+        """hf/llm未指定時は従来フォーマット"""
+        papers = [
+            {
+                "title": "Old Format Paper",
+                "importance_score": 8.0,
+                "selection_reason": "テスト",
+                "key_points": [],
+                "url": "https://arxiv.org/abs/2601.00001",
+            }
+        ]
+        publisher = SlackPublisher()
+        message = publisher.format_arxiv_weekly(
+            start_date="2026-04-01",
+            end_date="2026-04-07",
+            papers=papers,
+        )
+
+        assert "TOP 1" in message
+        assert "HuggingFace" not in message
