@@ -77,5 +77,22 @@ dev = [
     "pytest-cov>=4.0.0",
 ]
 
+[tool.pytest.ini_options]
+# サードパーティ未修正の DeprecationWarning のみ抑止する。
+# 抑止理由（upstream トラッキング）:
+#   - marker-pdf / surya-ocr: Pydantic V1 形式 `class Config` 残存。
+#     最新版（marker-pdf 1.10.2 / surya-ocr 0.17.1）でも未対応。
+#     対応するには upstream に PR を出して `model_config = ConfigDict(...)` へ移行させる必要がある。
+#   - PyMuPDF (SWIG): macOS では SWIG 4.3.1 でビルドされる制約により警告が残る。
+#     SWIG 側のバグ https://github.com/swig/swig/issues/3279 解消待ち。
+#     Linux/Windows では PyMuPDF 1.27.x で解消済み（参考 PyMuPDF#3931）。
+# 修正されたら該当行を順次削除すること。
+filterwarnings = [
+    "ignore::pydantic.PydanticDeprecatedSince20:marker.settings",
+    "ignore::pydantic.PydanticDeprecatedSince20:surya.settings",
+    "ignore:builtin type Swig.* has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
+]
+
 [tool.mypy]
 ignore_missing_imports = true
