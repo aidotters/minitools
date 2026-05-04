@@ -53,14 +53,18 @@ class FullTextTranslator:
         self,
         provider: Optional[str] = None,
         model: Optional[str] = None,
+        thinking_level: Optional[str] = None,
         llm_client: Optional[BaseLLMClient] = None,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         max_retries: int = 3,
     ):
         """
         Args:
-            provider: LLMプロバイダー名（"ollama" or "openai"）
+            provider: LLMプロバイダー名（"ollama" / "openai" / "gemini"）
             model: 使用するモデル名
+            thinking_level: Gemini 3系の思考深度（"minimal" / "low" / "medium" / "high"）。
+                Gemini 利用時のみ有効。未指定時は ``llm.gemini.default_thinking_level``
+                にフォールバック。
             llm_client: LLMクライアント（テスト用に直接注入可能）
             chunk_size: チャンク分割のサイズ（文字数）
             max_retries: 翻訳失敗時のリトライ回数
@@ -72,18 +76,23 @@ class FullTextTranslator:
         )
         # モデルはプロバイダーのデフォルトに委譲（明示指定時のみ上書き）
         self.model = model or config.get(f"llm.{self.provider}.default_model", None)
+        self.thinking_level = thinking_level
         self.chunk_size = chunk_size
         self.max_retries = max_retries
 
         if llm_client:
             self.llm = llm_client
         else:
-            self.llm = get_llm_client(provider=self.provider, model=self.model)
+            self.llm = get_llm_client(
+                provider=self.provider,
+                model=self.model,
+                thinking_level=self.thinking_level,
+            )
 
         logger.info(
             f"FullTextTranslator initialized "
             f"(provider={self.provider}, model={self.model}, "
-            f"chunk_size={chunk_size})"
+            f"thinking_level={self.thinking_level}, chunk_size={chunk_size})"
         )
 
     async def translate(self, markdown: str) -> str:

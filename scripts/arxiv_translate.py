@@ -470,35 +470,57 @@ def _log_summary(total: int, stats: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _build_translator(args) -> FullTextTranslator:
+    """設定とCLI引数から FullTextTranslator を構築
+
+    `defaults.arxiv_translate.translate_model` / `translate_thinking_level` を
+    優先的に参照し、未指定時は `llm.<provider>.default_*` にフォールバック。
+    """
+    config = get_config()
+    provider = args.provider
+    model = config.get("defaults.arxiv_translate.translate_model")
+    thinking_level = config.get("defaults.arxiv_translate.translate_thinking_level")
+    return FullTextTranslator(
+        provider=provider,
+        model=model,
+        thinking_level=thinking_level,
+    )
+
+
 def _build_repairer(args) -> VlmParseRepairer | None:
     """設定とCLI引数からVlmParseRepairerを構築（修復無効時はNone）"""
     config = get_config()
-    enabled = config.get("arxiv_translate.vlm_repair.enabled", True)
+    enabled = config.get("defaults.arxiv_translate.vlm_repair.enabled", True)
     if getattr(args, "no_vlm_repair", False):
         enabled = False
     if not enabled:
         return None
     provider = (
         getattr(args, "provider", None)
-        or config.get("arxiv_translate.vlm_repair.provider")
+        or config.get("defaults.arxiv_translate.vlm_repair.provider")
         or config.get("defaults.arxiv_translate.provider", "gemini")
     )
     cli_max_total = getattr(args, "max_total_calls", None)
     max_total_calls = (
         cli_max_total
         if cli_max_total is not None
-        else config.get("arxiv_translate.vlm_repair.max_total_calls", 25)
+        else config.get("defaults.arxiv_translate.vlm_repair.max_total_calls", 25)
     )
     return VlmParseRepairer(
         provider=provider,
-        model=config.get("arxiv_translate.vlm_repair.model"),
+        model=config.get("defaults.arxiv_translate.vlm_repair.model"),
+        thinking_level=config.get("defaults.arxiv_translate.vlm_repair.thinking_level"),
         max_pages_per_defect=config.get(
-            "arxiv_translate.vlm_repair.max_pages_per_defect", 3
+            "defaults.arxiv_translate.vlm_repair.max_pages_per_defect", 3
         ),
         max_total_calls=max_total_calls,
-        repair_tables=config.get("arxiv_translate.vlm_repair.repair_tables", True),
-        repair_figures=config.get("arxiv_translate.vlm_repair.repair_figures", True),
-        dpi=config.get("arxiv_translate.vlm_repair.dpi", 200),
+        repair_tables=config.get(
+            "defaults.arxiv_translate.vlm_repair.repair_tables", True
+        ),
+        repair_figures=config.get(
+            "defaults.arxiv_translate.vlm_repair.repair_figures", True
+        ),
+        dpi=config.get("defaults.arxiv_translate.vlm_repair.dpi", 200),
     )
 
 
@@ -535,7 +557,7 @@ async def main_repair(args):
 
 async def main_translate(args):
     """translate サブコマンド: Markdown→日本語翻訳"""
-    translator = FullTextTranslator(provider=args.provider)
+    translator = _build_translator(args)
     stats = {"success": 0, "skipped": 0, "failed": 0}
     for i, url in enumerate(args.url):
         logger.info(f"[translate] Paper {i + 1}/{len(args.url)}: {url}")
@@ -549,7 +571,7 @@ async def main_upload(args):
     block_builder = NotionBlockBuilder()
     publisher = None
     database_id = None
-    translator = FullTextTranslator(provider=args.provider)
+    translator = _build_translator(args)
 
     if not args.dry_run:
         database_id = os.getenv("NOTION_ARXIV_DATABASE_ID") or os.getenv(
@@ -577,7 +599,7 @@ async def main_upload(args):
 
 async def main_pipeline(args):
     """全パイプライン: parse→translate→upload"""
-    translator = FullTextTranslator(provider=args.provider)
+    translator = _build_translator(args)
     block_builder = NotionBlockBuilder()
     repairer = _build_repairer(args)
     enable_repair = repairer is not None

@@ -713,3 +713,62 @@ webhook = Config.get_api_key('slack_arxiv')  # SLACK_WEBHOOK_URL
 database_id = os.getenv('NOTION_ARXIV_DATABASE_ID') or os.getenv('NOTION_DB_ID')
 webhook_url = os.getenv('SLACK_ARXIV_WEBHOOK_URL') or os.getenv('SLACK_WEBHOOK_URL')
 ```
+
+## 新モジュール追加パターン
+
+新しい収集・変換・処理モジュール（特に外部バイナリやmultimodal LLMに依存するもの）を追加する際の指針。
+
+### 外部バイナリ・重量級ライブラリ依存の追加チェックリスト
+
+`marker-pdf`, `pymupdf`, `opencv-python-headless`, `mlx-whisper`, `ffmpeg` のようにバイナリ依存・モデル依存を含むライブラリを追加するときは、以下を必ず実施する:
+
+- [ ] **`pyproject.toml`**: バージョン下限を明示的に指定（例: `marker-pdf>=1.10.0`）
+  - メジャーバージョンの破壊的変更を避けるため、`>=` で固定し、CHANGELOG にバージョン根拠を残す
+  - 巨大依存はオプショナル extras に分離する選択肢を検討（例: `[whisper]`）
+- [ ] **`docs/core/CHANGELOG.md`**: `[Unreleased]` の Dependencies セクションにバージョンと採用理由を追記
+- [ ] **`docs/core/repo-structure.md`**: 新規ファイル/ディレクトリを追加
+- [ ] **`docs/core/architecture.md`**: 外部依存の役割と配置レイヤを記載
+- [ ] **`README.md`** / **`CLAUDE.md`**: セットアップ手順（FFmpeg等の外部ツール）を補足
+- [ ] **遅延 import**: モジュールロード時間を抑えるため、重量級ライブラリ（`marker-pdf`, `mlx-whisper` 等）は実際に使用する関数の中で import する
+- [ ] **テスト**: 重量級依存はモックで隔離し、CIで全件ロードしないよう配慮
+
+### Multimodal LLM の Graceful Degradation パターン
+
+`BaseLLMClient.generate_from_images()` のように、すべてのプロバイダで対応していないAPIを追加する際は、未対応プロバイダで例外を出さずに警告ログ + 安全なデフォルト値を返す。
+
+```python
+# minitools/llm/ollama_client.py の例
+async def generate_from_images(
+    self, prompt: str, images: list[bytes], model: str | None = None
+) -> str:
+    """Ollama は multimodal を未サポート。warning を出して空文字列を返す"""
+    logger.warning(
+        "Ollama client does not support multimodal generation. "
+        "Switch provider to gemini or openai for VLM features."
+    )
+    return ""
+```
+
+**設計原則**:
+- 呼び出し側は「空文字列 or 短い応答」を `applied += 0` として正しくカウントする
+- 機能ON/OFFの設定キー（例: `vlm_repair.enabled`）で完全スキップも可能にする
+- ログは `WARNING` 以上のレベルで残し、サイレントフェイルにしない
+
+### Heuristic 検出 + LLM 修復の二段構成
+
+`VlmParseRepairer` のように、コストの高いLLM呼び出しを伴う処理は、まず軽量なヒューリスティック検出器（`ParseErrorDetector`）で候補を絞り込み、必要箇所だけLLMに渡す構成を推奨する。
+
+- **検出器（heuristic）**: LLM不使用、`detect()` 関数のみ。リファクタしやすく単体テスト容易
+- **修復器（LLM）**: `Semaphore=2` 程度で並列度を絞る（VLMは1呼び出しあたりコスト高）
+- **予算制御**: `max_total_calls` で1ジョブあたりの最大LLM呼び出し回数を制限
+- **冪等性**: `MarkdownPatcher` のように、同じ入力を2回当てても結果が変わらない実装にする
+
+### テストファイル命名例
+
+新規モジュールに対応するテストファイルは `tests/test_{モジュール名}.py` に配置する:
+
+| ソースモジュール | テストファイル |
+|------------------|---------------|
+| `minitools/scrapers/arxiv_scraper.py` | `tests/test_arxiv_scraper.py` |
+| `minitools/processors/vlm_parse_repairer.py` | `tests/test_vlm_parse_repairer.py` |
+| `minitools/processors/full_text_translator.py` | `tests/test_full_text_translator.py` |

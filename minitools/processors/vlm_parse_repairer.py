@@ -510,14 +510,18 @@ class VlmRepairer:
         self,
         provider: Optional[str] = None,
         model: Optional[str] = None,
+        thinking_level: Optional[str] = None,
         client: Optional[BaseLLMClient] = None,
     ):
         if client is not None:
             self.client = client
             self.provider = provider or "custom"
         else:
-            self.client = get_llm_client(provider=provider, model=model)
+            self.client = get_llm_client(
+                provider=provider, model=model, thinking_level=thinking_level
+            )
             self.provider = provider or "default"
+        self.thinking_level = thinking_level
         self._semaphore = asyncio.Semaphore(self.MAX_CONCURRENT)
 
     async def repair_table(
@@ -700,6 +704,7 @@ class VlmParseRepairer:
         self,
         provider: Optional[str] = None,
         model: Optional[str] = None,
+        thinking_level: Optional[str] = None,
         max_pages_per_defect: int = 3,
         max_total_calls: int = 15,
         repair_tables: bool = True,
@@ -709,13 +714,19 @@ class VlmParseRepairer:
     ):
         self.provider = provider
         self.model = model
+        self.thinking_level = thinking_level
         self.max_pages_per_defect = max_pages_per_defect
         self.max_total_calls = max_total_calls
         self.repair_tables = repair_tables
         self.repair_figures = repair_figures
         self.dpi = dpi
         self.detector = ParseErrorDetector()
-        self.repairer = VlmRepairer(provider=provider, model=model, client=client)
+        self.repairer = VlmRepairer(
+            provider=provider,
+            model=model,
+            thinking_level=thinking_level,
+            client=client,
+        )
         self.patcher = MarkdownPatcher()
 
     async def repair(

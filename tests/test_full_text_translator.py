@@ -285,3 +285,32 @@ class TestFullTextTranslatorOuterFenceUnwrap:
         text = "# 見出し\n\n本文の段落"
         result = FullTextTranslator._unwrap_outer_code_fence(text)
         assert result == text
+
+
+class TestFullTextTranslatorThinkingLevel:
+    """thinking_level の伝搬テスト"""
+
+    def test_thinking_level_propagated_to_client(self):
+        """FullTextTranslator が thinking_level を get_llm_client に渡す"""
+        from unittest.mock import patch, MagicMock
+
+        with patch(
+            "minitools.processors.full_text_translator.get_llm_client"
+        ) as mock_factory:
+            mock_factory.return_value = MagicMock()
+            FullTextTranslator(provider="gemini", thinking_level="medium")
+            kwargs = mock_factory.call_args.kwargs
+            assert kwargs["provider"] == "gemini"
+            assert kwargs["thinking_level"] == "medium"
+
+    def test_thinking_level_default_none(self):
+        """thinking_level 未指定時は None が渡される（クライアント側でデフォルト解決）"""
+        from unittest.mock import patch, MagicMock
+
+        with patch(
+            "minitools.processors.full_text_translator.get_llm_client"
+        ) as mock_factory:
+            mock_factory.return_value = MagicMock()
+            FullTextTranslator(provider="gemini")
+            kwargs = mock_factory.call_args.kwargs
+            assert kwargs["thinking_level"] is None

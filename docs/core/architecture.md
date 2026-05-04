@@ -36,6 +36,8 @@ flowchart TB
     subgraph Scrapers["スクレイピングレイヤー"]
         MS["MediumScraper"]
         MDC["MarkdownConverter"]
+        AS["ArxivScraper"]
+        JR["JinaReader"]
     end
 
     subgraph LLMLayer["LLM抽象化レイヤー"]
@@ -60,6 +62,7 @@ flowchart TB
         EmbFactory["get_embedding_client()"]
         OllamaEmb["OllamaEmbeddingClient"]
         OpenAIEmb["OpenAIEmbeddingClient"]
+        GeminiEmb["GeminiEmbeddingClient"]
     end
 
     subgraph Publishers["出力レイヤー"]
@@ -93,6 +96,11 @@ flowchart TB
     FTT --> NBB
     NBB --> NP
 
+    ArXiv --> AS
+    AS --> VPR
+    VPR <--> LLMFactory
+    AS --> FTT
+
     LLMFactory --> OC
     LLMFactory --> OpenAIC
     LLMFactory --> GeminiC
@@ -106,6 +114,9 @@ flowchart TB
     DD <--> EmbFactory
     EmbFactory --> OllamaEmb
     EmbFactory --> OpenAIEmb
+    EmbFactory --> GeminiEmb
+
+    JR --> FTT
 
     TR --> NP
     TR --> SP
@@ -127,11 +138,14 @@ flowchart TB
         arxiv["arxiv.py"]
         medium["medium.py"]
         medium_translate["medium_translate.py"]
+        arxiv_translate["arxiv_translate.py"]
         google_alerts["google_alerts.py"]
+        google_alerts_translate["google_alerts_translate.py"]
         youtube["youtube.py"]
         google_alert_weekly_digest["google_alert_weekly_digest.py"]
         arxiv_weekly["arxiv_weekly.py"]
         x_trend["x_trend.py"]
+        x_followings["x_followings.py"]
     end
 
     subgraph collectors["minitools/collectors/"]
@@ -145,12 +159,15 @@ flowchart TB
     subgraph scrapers["minitools/scrapers/"]
         MS["MediumScraper"]
         MDC["MarkdownConverter"]
+        AS["ArxivScraper"]
+        JR["JinaReader"]
     end
 
     subgraph processors["minitools/processors/"]
         TR["Translator"]
         SU["Summarizer"]
         FTT["FullTextTranslator"]
+        VPR["VlmParseRepairer"]
         WDP["WeeklyDigestProcessor"]
         AWP["ArxivWeeklyProcessor"]
         XTP["XTrendProcessor"]
@@ -192,10 +209,21 @@ flowchart TB
     medium_translate --> NBB
     medium_translate --> NP
 
+    arxiv_translate --> AS
+    arxiv_translate --> VPR
+    arxiv_translate --> FTT
+    arxiv_translate --> NBB
+    arxiv_translate --> NP
+
     google_alerts --> GAC
     google_alerts --> TR
     google_alerts --> NP
     google_alerts --> SP
+
+    google_alerts_translate --> JR
+    google_alerts_translate --> FTT
+    google_alerts_translate --> NBB
+    google_alerts_translate --> NP
 
     youtube --> YC
     youtube --> SU
@@ -214,6 +242,8 @@ flowchart TB
     x_trend --> XTC
     x_trend --> XTP
     x_trend --> SP
+
+    x_followings --> XTC
 
     AC --> Logger
     MC --> Logger
@@ -262,14 +292,19 @@ flowchart LR
     A["Gmail API"] --> B["メール取得"]
     B --> C["HTML解析"]
     C --> D["記事リンク抽出"]
-    D --> E["Jina AI Reader"]
-    E --> F["記事コンテンツ"]
+    D --> M{"--use-jina?"}
+    M -->|"No (default)"| P["メールプレビュー\nテキスト抽出"]
+    M -->|"Yes"| E["Jina AI Reader\n(MediumCollector独自実装)"]
+    P --> F["記事コンテンツ"]
+    E --> F
     F --> G["Translator"]
     G --> H["日本語タイトル/要約"]
     H --> I{"保存先"}
     I -->|Notion| J["NotionPublisher"]
     I -->|Slack| K["SlackPublisher"]
 ```
+
+デフォルトはGmailメール内のプレビューテキストを使用（Cloudflareブロック回避＋高速）。`--use-jina` 指定時のみ `r.jina.ai` で全文取得を試みる。Medium側のJina経由ブロックがあるため、`scrapers/jina_reader.py` の `JinaReader` クラスは使用せず、`MediumCollector` 内の独自実装で User-Agent ローテーション等の回避策を持つ。
 
 ### Medium 全文翻訳フロー
 
@@ -286,6 +321,53 @@ flowchart LR
     I --> J["NotionPublisher\nappend_blocks()"]
     J --> K["既存ページに追記"]
 ```
+
+### Google Alerts 記事全文翻訳フロー
+
+```mermaid
+flowchart LR
+    A["URL（CLI入力）"] --> B["JinaReader\n(scrapers/jina_reader.py)"]
+    B --> C["英語Markdown\n+ 抽出メタデータ"]
+    C --> D["FullTextTranslator"]
+    D --> E["日本語Markdown"]
+    E --> F{"既存ページ?"}
+    F -->|"Yes & Translated=false"| G["NotionBlockBuilder\n(先頭divider自動挿入)"]
+    G --> H["append_blocks +\nupdate_page_properties\n(Translated=true)"]
+    F -->|"Yes & Translated=true"| I["スキップ\n(WARNING)"]
+    F -->|"No"| J["build_new_page_metadata\n(LLMタイトル/要約)"]
+    J --> K["create_page\n(Translated=true 含む)"]
+    K --> L["先頭divider除去 →\nappend_blocks"]
+    H --> M["Google Alerts DB"]
+    L --> M
+```
+
+新規ページ作成時は `Translated: True` を properties に含めて `create_page` 1 回で完結させ、追加の `update_page_properties` を発行しない。`MediumCollector` が `r.jina.ai` に対するMedium側のCloudflareブロック対策のため独自実装を維持しているため、`JinaReader` はMedium以外（ニュース・技術ブログ等）専用。
+
+### ArXiv 論文全文翻訳フロー
+
+```mermaid
+flowchart LR
+    A["ArXiv URL"] --> B["ArxivScraper\n(httpx PDFダウンロード)"]
+    B --> C["PDFバイト列"]
+    C --> D["marker-pdf\n(PDF→Markdown)"]
+    D --> E["raw.md + 画像"]
+    E --> F["VlmParseRepairer\n(壊れた表/孤立図の修復)"]
+    F --> G["repaired.md\n(修復が適用された場合)"]
+    G --> H["FullTextTranslator\n(チャンク翻訳)"]
+    H --> I["translated.md\n(日本語訳)"]
+    I --> J["NotionBlockBuilder\n(Markdown→ブロック)"]
+    J --> K["NotionPublisher\n(File Upload + ページ作成)"]
+    K --> L["Notion Database"]
+```
+
+3 ステップに分離されており、各ステップは個別に再実行できる:
+1. **parse** — PDFダウンロード→marker-pdfでMarkdown化→VLMでパース欠陥を修復
+2. **translate** — 見出し単位でチャンク分割し日本語に翻訳
+3. **upload** — Notion File Upload APIで画像アップロード→ブロック変換→Notionへ保存
+
+#### VlmParseRepairer の設計判断
+
+`VlmParseRepairer` はパース欠陥の検出と修復を 2 段階に分離している。前段の `ParseErrorDetector` は LLM を使わないヒューリスティック検出器で、壊れた表・孤立した図参照などの候補をローカルで列挙する。これにより、後段の VLM 呼び出しは実際に修復が必要な箇所だけに絞られ、API コストとレイテンシを抑制できる。後段の `VlmRepairer` は `Semaphore=2` で並列度を制限している。これは VLM 呼び出しが画像を含むため 1 リクエストあたりのトークン消費が大きく、プロバイダのレート制限に到達しやすいことと、修復タスク自体が論文 1 本につき数件〜十数件規模であり過度な並列化のメリットが小さいことを踏まえた設定。
 
 ### Google Alerts 処理フロー
 
@@ -356,7 +438,17 @@ Ollama/OpenAIの両方をサポートするLLM抽象化レイヤー。
 |-------------|-----|----------------|---------|
 | Ollama | 翻訳・要約 | gemma3:27b | `llm.ollama.default_model` |
 | OpenAI | 高速処理 | gpt-4o-mini | `llm.openai.default_model` |
-| Gemini | 全文翻訳（無料枠活用） | gemini-2.5-flash | `llm.gemini.default_model` |
+| Gemini | 全文翻訳（無料枠活用） | gemini-3.1-flash-lite-preview | `llm.gemini.default_model` |
+
+**Gemini 3 系の `thinking_level` 制御:**
+
+Gemini 3 系で導入された `thinking_level` パラメータ（`minimal` / `low` / `medium` / `high`）を `LangChainGeminiClient` で扱う。Flash / Pro は未指定時のデフォルトが `high` でコスト増を招くため、本実装は未指定時に `minimal` を明示的に渡してコスト想定外発生を防ぐ。
+
+- グローバル既定: `llm.gemini.default_thinking_level`（既定 `minimal`）
+- 用途別オーバーライド:
+  - `defaults.<機能>.translate_thinking_level`（翻訳系）
+  - `defaults.arxiv_translate.vlm_repair.thinking_level`（VLM 修復用、推奨 `medium`）
+- 伝搬経路: `get_llm_client(thinking_level=...)` → `LangChainGeminiClient.__init__` → `_get_chat_model().model_kwargs.thinking_config` （JSON モードでも継承）
 
 **連携パターン（LLM抽象化レイヤー経由）:**
 ```python
@@ -384,7 +476,9 @@ response = client.chat(
 
 ### Ollama LLM
 
-ローカルで動作するLLMサーバー。翻訳と要約に使用。
+ローカルで動作するLLMサーバー。`Translator` / `Summarizer` 経由のレガシーパス（`arxiv` / `medium` / `google-alerts` / `youtube`）の翻訳・要約に使用。
+
+> **注:** 全文翻訳機能（`medium-translate` / `arxiv-translate` / `google-alerts-translate`）が使用する `FullTextTranslator` および週次ダイジェスト（`arxiv-weekly` / `google-alert-weekly-digest`）はGeminiまたはOpenAIをデフォルトとし、`defaults.<feature>.translate_provider` などで上書きできる。
 
 | 用途 | モデル | 設定キー |
 |-----|--------|---------|
@@ -458,14 +552,17 @@ async with aiohttp.ClientSession() as session:
 
 ### Jina AI Reader
 
-Medium記事のコンテンツ取得に使用。
+Google Alerts記事のMarkdown抽出に使用（ニュース・技術ブログ等の英語記事向け）。`google-alerts-translate` 専用クラスとして `minitools/scrapers/jina_reader.py` に実装されている。
 
 **エンドポイント:** `https://r.jina.ai/{url}`
 
 **特徴:**
 - HTMLをMarkdown形式で返却
-- Cloudflareによるブロックあり
-- User-Agentローテーションで回避
+- `Title:` / `Published Time:` ヘッダーからメタデータを抽出（`extract_metadata()`）
+- 指数バックオフによるリトライ（1s/2s/4s、最大3回）
+- Cloudflare/`error 403`/`just a moment` を検出して再試行
+
+**Mediumへの適用:** Mediumはサイト側でJina経由のアクセスをブロックするため、`MediumCollector` 内でメールプレビュー利用または `--use-jina` 指定時の独自実装を保持しており、本クラスは使用しない。
 
 ### Tavily API
 

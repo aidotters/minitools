@@ -23,7 +23,7 @@ class Summarizer:
         config = get_config()
         self.model = model or config.get("models.summarization", "gemma3:27b")
         self.client = ollama.Client()
-        logger.debug(f"Summarizer initialized with model: {self.model}")
+        logger.info(f"Summarizer initialized (provider=ollama, model={self.model})")
 
     async def summarize(
         self, text: str, max_length: int = 200, language: str = "japanese"
