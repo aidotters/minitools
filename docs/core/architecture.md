@@ -37,6 +37,7 @@ flowchart TB
         MS["MediumScraper"]
         MDC["MarkdownConverter"]
         AS["ArxivScraper"]
+        JR["JinaReader"]
     end
 
     subgraph LLMLayer["LLM抽象化レイヤー"]
@@ -61,6 +62,7 @@ flowchart TB
         EmbFactory["get_embedding_client()"]
         OllamaEmb["OllamaEmbeddingClient"]
         OpenAIEmb["OpenAIEmbeddingClient"]
+        GeminiEmb["GeminiEmbeddingClient"]
     end
 
     subgraph Publishers["出力レイヤー"]
@@ -112,6 +114,9 @@ flowchart TB
     DD <--> EmbFactory
     EmbFactory --> OllamaEmb
     EmbFactory --> OpenAIEmb
+    EmbFactory --> GeminiEmb
+
+    JR --> FTT
 
     TR --> NP
     TR --> SP
@@ -135,10 +140,12 @@ flowchart TB
         medium_translate["medium_translate.py"]
         arxiv_translate["arxiv_translate.py"]
         google_alerts["google_alerts.py"]
+        google_alerts_translate["google_alerts_translate.py"]
         youtube["youtube.py"]
         google_alert_weekly_digest["google_alert_weekly_digest.py"]
         arxiv_weekly["arxiv_weekly.py"]
         x_trend["x_trend.py"]
+        x_followings["x_followings.py"]
     end
 
     subgraph collectors["minitools/collectors/"]
@@ -153,6 +160,7 @@ flowchart TB
         MS["MediumScraper"]
         MDC["MarkdownConverter"]
         AS["ArxivScraper"]
+        JR["JinaReader"]
     end
 
     subgraph processors["minitools/processors/"]
@@ -212,6 +220,11 @@ flowchart TB
     google_alerts --> NP
     google_alerts --> SP
 
+    google_alerts_translate --> JR
+    google_alerts_translate --> FTT
+    google_alerts_translate --> NBB
+    google_alerts_translate --> NP
+
     youtube --> YC
     youtube --> SU
     youtube --> TR
@@ -229,6 +242,8 @@ flowchart TB
     x_trend --> XTC
     x_trend --> XTP
     x_trend --> SP
+
+    x_followings --> XTC
 
     AC --> Logger
     MC --> Logger
@@ -277,14 +292,19 @@ flowchart LR
     A["Gmail API"] --> B["メール取得"]
     B --> C["HTML解析"]
     C --> D["記事リンク抽出"]
-    D --> E["Jina AI Reader"]
-    E --> F["記事コンテンツ"]
+    D --> M{"--use-jina?"}
+    M -->|"No (default)"| P["メールプレビュー\nテキスト抽出"]
+    M -->|"Yes"| E["Jina AI Reader\n(MediumCollector独自実装)"]
+    P --> F["記事コンテンツ"]
+    E --> F
     F --> G["Translator"]
     G --> H["日本語タイトル/要約"]
     H --> I{"保存先"}
     I -->|Notion| J["NotionPublisher"]
     I -->|Slack| K["SlackPublisher"]
 ```
+
+デフォルトはGmailメール内のプレビューテキストを使用（Cloudflareブロック回避＋高速）。`--use-jina` 指定時のみ `r.jina.ai` で全文取得を試みる。Medium側のJina経由ブロックがあるため、`scrapers/jina_reader.py` の `JinaReader` クラスは使用せず、`MediumCollector` 内の独自実装で User-Agent ローテーション等の回避策を持つ。
 
 ### Medium 全文翻訳フロー
 
@@ -456,7 +476,9 @@ response = client.chat(
 
 ### Ollama LLM
 
-ローカルで動作するLLMサーバー。翻訳と要約に使用。
+ローカルで動作するLLMサーバー。`Translator` / `Summarizer` 経由のレガシーパス（`arxiv` / `medium` / `google-alerts` / `youtube`）の翻訳・要約に使用。
+
+> **注:** 全文翻訳機能（`medium-translate` / `arxiv-translate` / `google-alerts-translate`）が使用する `FullTextTranslator` および週次ダイジェスト（`arxiv-weekly` / `google-alert-weekly-digest`）はGeminiまたはOpenAIをデフォルトとし、`defaults.<feature>.translate_provider` などで上書きできる。
 
 | 用途 | モデル | 設定キー |
 |-----|--------|---------|
@@ -530,14 +552,17 @@ async with aiohttp.ClientSession() as session:
 
 ### Jina AI Reader
 
-Medium記事のコンテンツ取得に使用。
+Google Alerts記事のMarkdown抽出に使用（ニュース・技術ブログ等の英語記事向け）。`google-alerts-translate` 専用クラスとして `minitools/scrapers/jina_reader.py` に実装されている。
 
 **エンドポイント:** `https://r.jina.ai/{url}`
 
 **特徴:**
 - HTMLをMarkdown形式で返却
-- Cloudflareによるブロックあり
-- User-Agentローテーションで回避
+- `Title:` / `Published Time:` ヘッダーからメタデータを抽出（`extract_metadata()`）
+- 指数バックオフによるリトライ（1s/2s/4s、最大3回）
+- Cloudflare/`error 403`/`just a moment` を検出して再試行
+
+**Mediumへの適用:** Mediumはサイト側でJina経由のアクセスをブロックするため、`MediumCollector` 内でメールプレビュー利用または `--use-jina` 指定時の独自実装を保持しており、本クラスは使用しない。
 
 ### Tavily API
 

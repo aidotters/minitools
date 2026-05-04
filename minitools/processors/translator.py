@@ -24,7 +24,7 @@ class Translator:
         config = get_config()
         self.model = model or config.get("models.translation", "gemma3:27b")
         self.client = ollama.Client()
-        logger.debug(f"Translator initialized with model: {self.model}")
+        logger.info(f"Translator initialized (provider=ollama, model={self.model})")
 
     async def translate_to_japanese(self, text: str, context: str = "") -> str:
         """

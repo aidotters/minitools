@@ -103,23 +103,18 @@ defaults:
   google_alerts:
     hours_back: 6                  # 過去何時間分のメールを取得するか
     max_alerts_per_message: 12     # Slackメッセージあたりの最大アラート数
-    translate_provider: ollama     # google-alerts-translate のデフォルトLLMプロバイダー
-    translate_thinking_level: "minimal"   # Gemini 利用時の思考深度（ollama 利用時は無視される）
-    # Gemini 切替時の参考値:
-    # translate_provider: gemini
-    # translate_model: "gemini-3.1-flash-lite-preview"
+    translate_provider: gemini                          # google-alerts-translate のデフォルトLLMプロバイダー
+    translate_model: "gemini-3.1-flash-lite-preview"   # 翻訳モデル（高速・低コスト）
+    translate_thinking_level: "minimal"                 # 翻訳タスクは思考不要のため minimal
 
   # Medium Daily Digest
   medium:
     fetch_today: true              # 今日のダイジェストを取得
     use_jina_reader: false         # Jina AI Readerを使用（falseの場合はメールのプレビューを使用）
     translate_clap_threshold: 100  # 自動翻訳の拍手数閾値
-    translate_provider: ollama     # 翻訳LLMプロバイダー
-    translate_model: gemma3:27b    # 翻訳モデル
-    translate_thinking_level: "minimal"   # Gemini 利用時の思考深度（ollama 利用時は無視される）
-    # Gemini 切替時の参考値:
-    # translate_provider: gemini
-    # translate_model: "gemini-3.1-flash-lite-preview"
+    translate_provider: gemini                          # 翻訳LLMプロバイダー
+    translate_model: "gemini-3.1-flash-lite-preview"   # 翻訳モデル（高速・低コスト）
+    translate_thinking_level: "minimal"                 # 翻訳タスクは思考不要のため minimal
 
   # YouTube要約
   youtube:

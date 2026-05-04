@@ -29,7 +29,8 @@ minitools/
 │   │   └── notion.py              # Notionデータベース読み取り
 │   ├── researchers/                # リサーチレイヤー
 │   │   ├── __init__.py
-│   │   └── trend.py               # Tavily APIでトレンド調査
+│   │   ├── trend.py               # Tavily APIでトレンド調査
+│   │   └── hf_papers.py           # Hugging Face Daily Papersから論文取得
 │   ├── scrapers/                   # スクレイピングレイヤー
 │   │   ├── __init__.py
 │   │   ├── medium_scraper.py      # Playwright Medium記事取得（CDP/スタンドアロン）
@@ -163,6 +164,7 @@ Ollama/OpenAIを統一的に扱うための抽象化レイヤー。
 | モジュール | 役割 | 外部サービス |
 |-----------|------|------------|
 | `trend.py` | AI/機械学習分野のトレンド調査 | Tavily API |
+| `hf_papers.py` | Hugging Face Daily Papersから注目論文を取得 | Hugging Face Papers |
 
 #### scrapers/ (スクレイピング)
 

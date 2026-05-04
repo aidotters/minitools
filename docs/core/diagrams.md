@@ -550,6 +550,147 @@ sequenceDiagram
     CLI-->>User: 処理完了
 ```
 
+### Google Alerts 全文翻訳フロー
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as scripts/google_alerts_translate.py
+    participant JR as JinaReader
+    participant Jina as r.jina.ai
+    participant FTT as FullTextTranslator
+    participant LLM as Gemini/OpenAI/Ollama
+    participant NBB as NotionBlockBuilder
+    participant NP as NotionPublisher
+    participant Notion
+
+    User->>CLI: google-alerts-translate --url URL [--url URL ...]
+
+    loop 各URL
+        CLI->>JR: fetch(url)
+        JR->>Jina: GET https://r.jina.ai/{url}
+        Note over JR,Jina: Cloudflare/403検出 →<br/>指数バックオフ（1s/2s/4s、最大3回）
+        Jina-->>JR: Markdown + headers
+        JR->>JR: extract_metadata()<br/>(Title / Published Time)
+        JR-->>CLI: (markdown, metadata)
+
+        CLI->>FTT: translate(markdown)
+        FTT->>FTT: 見出しでチャンク分割
+        loop 各チャンク（並列）
+            FTT->>LLM: chat(prompt)
+            LLM-->>FTT: 日本語Markdown
+        end
+        FTT-->>CLI: 翻訳済みMarkdown
+
+        CLI->>NP: find_page_by_url(url)
+        NP->>Notion: query(database_id, url)
+        Notion-->>NP: PageInfo(page_id, is_translated)
+        NP-->>CLI: PageInfo
+
+        alt 既存 & is_translated=true
+            CLI-->>User: スキップ（WARNING）
+        else 既存 & is_translated=false
+            CLI->>NBB: build_blocks(translated_md)
+            NBB-->>CLI: blocks（先頭divider付き）
+            CLI->>NP: append_blocks(page_id, blocks)
+            CLI->>NP: update_page_properties(Translated=true)
+            NP->>Notion: PATCH page + append children
+            Notion-->>NP: 200 OK
+        else 新規ページ
+            CLI->>LLM: build_new_page_metadata<br/>(タイトル/要約生成)
+            LLM-->>CLI: metadata
+            CLI->>NBB: build_blocks(translated_md)
+            NBB-->>CLI: blocks（先頭divider除去）
+            CLI->>NP: create_page(metadata, Translated=true)
+            NP->>Notion: pages.create()
+            Notion-->>NP: page_id
+            CLI->>NP: append_blocks(page_id, blocks)
+        end
+    end
+
+    CLI-->>User: 処理完了
+```
+
+### X トレンド処理フロー（3ソース統合）
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as scripts/x_trend.py
+    participant XTC as XTrendCollector
+    participant TwitterAPI
+    participant XTP as XTrendProcessor
+    participant LLM as Gemini/OpenAI/Ollama
+    participant SP as SlackPublisher
+    participant Slack
+
+    User->>CLI: x-trend [--region japan/global] [--no-trends/keywords/timeline]
+
+    par 3ソース並列収集（asyncio.gather）
+        CLI->>XTC: collect_all() — トレンド
+        XTC->>TwitterAPI: GET /trends (Japan WOEID)
+        TwitterAPI-->>XTC: trend_list
+        loop 各トレンド（Semaphore=5）
+            XTC->>TwitterAPI: GET /search?q={trend_name}
+            TwitterAPI-->>XTC: tweets
+        end
+        XTC-->>CLI: trends_with_tweets
+    and
+        CLI->>XTC: collect_all() — キーワード検索
+        loop 各キーワード
+            XTC->>TwitterAPI: GET /search?q={keyword}
+            TwitterAPI-->>XTC: tweets
+        end
+        XTC-->>CLI: keyword_results
+    and
+        CLI->>XTC: collect_all() — タイムライン
+        loop 各監視ユーザー
+            XTC->>TwitterAPI: GET /user/{username}/tweets
+            TwitterAPI-->>XTC: tweets
+        end
+        XTC-->>CLI: timeline_results
+    end
+
+    CLI->>XTP: process_all(collect_result)
+
+    Note over XTP,LLM: トレンド: AI関連フィルタ → 要約
+    XTP->>LLM: filter_ai_trends(trends, max=10)
+    LLM-->>XTP: AI関連トレンドのみ
+    loop 各AI関連トレンド（並列）
+        XTP->>LLM: summarize_trend(tweets)
+        LLM-->>XTP: TrendSummary
+    end
+
+    Note over XTP,LLM: キーワード: 要約のみ
+    loop 各キーワード（並列）
+        XTP->>LLM: summarize_keyword_results(tweets)
+        LLM-->>XTP: KeywordSummary
+    end
+
+    Note over XTP,LLM: タイムライン: AI関連フィルタ → 要約
+    loop 各ユーザー（並列）
+        XTP->>LLM: filter_ai_tweets(tweets)
+        LLM-->>XTP: AI関連ツイートのみ
+        XTP->>LLM: summarize_timeline_results(tweets)
+        LLM-->>XTP: TimelineSummary
+    end
+
+    XTP-->>CLI: ProcessResult
+
+    CLI->>SP: format_x_trend_digest_sections(result)
+    SP-->>CLI: list[str] (セクション分割)
+
+    alt Slack送信（非dry-run）
+        CLI->>SP: send_messages(messages)
+        loop 各セクション（0.5秒間隔）
+            SP->>Slack: POST webhook
+            Slack-->>SP: 200 OK
+        end
+    end
+
+    CLI-->>User: 処理完了
+```
+
 ## クラス関係図
 
 ```mermaid

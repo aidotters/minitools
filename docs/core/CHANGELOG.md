@@ -5,6 +5,14 @@
 ## [Unreleased]
 
 ### Changed
+- **`medium` / `google_alerts` の翻訳デフォルトプロバイダを `ollama` → `gemini` に変更** (2026-05-03)
+  - `defaults.medium.translate_provider`: `ollama` → `gemini`
+  - `defaults.medium.translate_model`: `gemma3:27b` → `gemini-3.1-flash-lite-preview`
+  - `defaults.google_alerts.translate_provider`: `ollama` → `gemini`（実 `settings.yaml` では未設定 → 新規追加）
+  - `defaults.google_alerts.translate_model`: 新規追加（`gemini-3.1-flash-lite-preview`）
+  - `arxiv_translate` と統一し、3 つの全文翻訳機能（arxiv-translate / medium-translate / google-alerts-translate）のデフォルトを Gemini 3.1 Flash-Lite Preview + thinking_level=minimal に揃えた
+  - 既存ユーザでローカル Ollama 翻訳に戻したい場合は `settings.yaml` で当該キーを `ollama` / `gemma3:27b` に上書き
+
 - **`arxiv_translate.vlm_repair.*` 設定キーを `defaults.arxiv_translate.vlm_repair.*` に統一** (2026-05-03)
   - 旧: トップレベル `arxiv_translate.vlm_repair.*` を `scripts/arxiv_translate.py:_build_repairer()` が直接参照
   - 新: `defaults.arxiv_translate.vlm_repair.*` 配下に統一（他の用途別設定キー命名と整合）

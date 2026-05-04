@@ -65,6 +65,9 @@ async def main_async():
     parser.add_argument("--notion", action="store_true", help="Notionへの保存のみ実行")
     parser.add_argument("--slack", action="store_true", help="Slackへの送信のみ実行")
     parser.add_argument("--debug", action="store_true", help="デバッグモードで実行")
+    parser.add_argument(
+        "--test", action="store_true", help="テストモード（最初の1論文のみ処理）"
+    )
 
     args = parser.parse_args()
 
@@ -120,6 +123,11 @@ async def main_async():
         logger.info("No papers found")
     else:
         logger.info(f"Found {len(papers)} papers")
+
+    # テストモードの場合は最初の1件のみ処理
+    if args.test and papers:
+        papers = papers[:1]
+        logger.info("テストモード: 最初の1論文のみ処理します")
 
     # 翻訳と要約
     translator = Translator()
