@@ -66,9 +66,12 @@ minitools/
 │   ├── google_alerts_translate.py # google-alerts-translate コマンド（Jina→翻訳→Notion）
 │   ├── youtube.py                 # youtube コマンド
 │   ├── google_alert_weekly_digest.py  # google-alert-weekly-digest コマンド
+│   ├── google_alert_daily_digest.py   # google-alert-daily-digest コマンド
 │   ├── arxiv_weekly.py            # arxiv-weekly コマンド
 │   ├── x_trend.py                 # x-trend コマンド
-│   └── x_followings.py            # x-followings コマンド
+│   ├── x_followings.py            # x-followings コマンド
+│   └── launchd/                   # macOS launchd plist（定期実行設定）
+│       └── com.tak.minitools.google-alert-daily-digest.plist
 │
 ├── docs/                           # ドキュメント
 │   ├── core/                      # コアドキュメント
@@ -85,6 +88,9 @@ minitools/
 │   ├── test_duplicate_detector.py # 重複検出テスト
 │   ├── test_arxiv_scraper.py     # ArXiv PDFスクレイパーテスト
 │   ├── test_full_text_translator.py # 全文翻訳テスト
+│   ├── test_google_alerts_translate.py # Google Alerts全文翻訳テスト
+│   ├── test_hf_papers.py         # Hugging Face Papersリサーチテスト
+│   ├── test_langchain_gemini.py  # LangChain Gemini クライアントテスト
 │   ├── test_markdown_converter.py # Markdown変換テスト
 │   ├── test_medium_collector.py  # Medium収集テスト
 │   ├── test_medium_scraper.py    # Mediumスクレイパーテスト
@@ -94,11 +100,12 @@ minitools/
 │   ├── test_notion_upload_file.py # Notion File Upload APIテスト
 │   ├── test_vlm_parse_repairer.py # VLMパース修復テスト
 │   ├── test_slack_arxiv_format.py # Slack ArXivフォーマットテスト
+│   ├── test_slack_publisher.py   # Slackパブリッシャーテスト
 │   ├── test_trend_researcher.py  # トレンドリサーチテスト
 │   ├── test_slack_x_trend_format.py # X トレンドSlackフォーマットテスト
 │   ├── test_x_trend_collector.py # X トレンド収集テスト
 │   ├── test_x_trend_processor.py # X トレンド処理テスト
-│   └── test_weekly_digest.py     # 週次ダイジェストテスト
+│   └── test_weekly_digest.py     # 週次/日次ダイジェストテスト
 │
 ├── pyproject.toml                 # プロジェクト設定・依存関係
 ├── settings.yaml.example          # 設定ファイルテンプレート
@@ -225,6 +232,7 @@ LLMを使用してコンテンツを処理するモジュール群。
 | `google_alerts_translate.py` | `google-alerts-translate` | Google Alerts記事の全文翻訳・Notion追記 |
 | `youtube.py` | `youtube` | YouTube動画の文字起こし・要約 |
 | `google_alert_weekly_digest.py` | `google-alert-weekly-digest` | Google Alerts週次ダイジェストの生成・Slack通知 |
+| `google_alert_daily_digest.py` | `google-alert-daily-digest` | Google Alerts日次ダイジェスト（過去24時間 Top10 + 「今日のまとめ」）の生成・Slack通知 |
 | `arxiv_weekly.py` | `arxiv-weekly` | ArXiv週次ダイジェストの生成・Slack通知 |
 | `x_trend.py` | `x-trend` | X トレンドの収集・AI関連フィルタ・Slack通知 |
 | `x_followings.py` | `x-followings` | X フォロー中アカウント一覧取得・YAML出力 |
@@ -382,6 +390,7 @@ google-alerts = "scripts.google_alerts:main"
 google-alerts-translate = "scripts.google_alerts_translate:main"
 youtube = "scripts.youtube:main"
 google-alert-weekly-digest = "scripts.google_alert_weekly_digest:main"
+google-alert-daily-digest = "scripts.google_alert_daily_digest:main"
 arxiv-weekly = "scripts.arxiv_weekly:main"
 arxiv-translate = "scripts.arxiv_translate:main"
 x-trend = "scripts.x_trend:main"

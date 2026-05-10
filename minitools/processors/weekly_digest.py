@@ -95,8 +95,13 @@ ARTICLE_SUMMARY_PROMPT_TEMPLATE = """以下の記事を3-4文（100-150文字）
 """
 
 
-class WeeklyDigestProcessor:
-    """週次ダイジェスト生成プロセッサ"""
+class DigestProcessor:
+    """週次/日次共通の汎用ダイジェスト Processor
+
+    記事リストを受け取り、重要度スコアリング・重複除去・トレンド総括・
+    記事要約を生成する。期間（週次/日次）に依存しない設計のため、
+    呼び出し側で取得期間を制御することで再利用可能。
+    """
 
     def __init__(
         self,
@@ -129,7 +134,7 @@ class WeeklyDigestProcessor:
         )
         self.buffer_ratio = config.get("weekly_digest.deduplication.buffer_ratio", 2.5)
         logger.info(
-            f"WeeklyDigestProcessor initialized "
+            f"DigestProcessor initialized "
             f"(max_concurrent={self.max_concurrent}, "
             f"batch_size={self.batch_size}, "
             f"dedup_enabled={self.dedup_enabled})"
@@ -594,3 +599,130 @@ class WeeklyDigestProcessor:
             result["duplicate_groups"] = duplicate_groups
 
         return result
+
+    async def summarize_all_articles(
+        self,
+        articles: List[Dict[str, Any]],
+        *,
+        chunk_size: int = 50,
+        highlight_articles: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """その日の全記事を俯瞰した日本語サマリ（4〜6文）を LLM で生成。
+
+        具体的な企業名・製品名・固有名詞・特徴的なキーワードを必ず含めるよう
+        プロンプトで指示する。highlight_articles が渡された場合は、それらを
+        「特に注目された Top 記事」として LLM に提示し、要約に反映させる。
+
+        - 入力件数が chunk_size 以下: 単発 LLM 呼び出し
+        - 入力件数が chunk_size 超: 2段階要約（チャンク並列要約 → 統合要約）
+        - LLM 失敗時は空文字を返す（呼び出し側で省略表示にフォールバック）
+
+        Args:
+            articles: 記事リスト（dedup 済み・Top N 絞り込み前）
+            chunk_size: 単発要約の上限件数
+            highlight_articles: 当日 Top N 記事（要約に踏み込ませるための追加コンテキスト）
+
+        Returns:
+            4〜6文の日本語サマリ。失敗時は空文字
+        """
+        if not articles:
+            return ""
+
+        highlight_block = self._format_highlight_block(highlight_articles)
+
+        if len(articles) <= chunk_size:
+            return await self._summarize_chunk(articles, highlight_block)
+
+        chunks = [
+            articles[i : i + chunk_size] for i in range(0, len(articles), chunk_size)
+        ]
+        logger.info(
+            f"summarize_all_articles: 2段階要約 ({len(articles)} 件 → {len(chunks)} チャンク)"
+        )
+        semaphore = asyncio.Semaphore(self.max_concurrent)
+
+        async def _partial(chunk: List[Dict[str, Any]]) -> str:
+            async with semaphore:
+                return await self._summarize_chunk(chunk, "")
+
+        partial_summaries = await asyncio.gather(*(_partial(c) for c in chunks))
+        partial_summaries = [s for s in partial_summaries if s]
+        if not partial_summaries:
+            return ""
+
+        merge_prompt = (
+            "あなたは AI / テクノロジーニュースの専門アナリストです。"
+            "以下は本日収集された AI 関連ニュース記事を分割して要約した部分サマリと、"
+            "特に注目された Top 記事の一覧です。これらを統合して本日の AI 業界の動向を"
+            "4〜6文の日本語でまとめてください。\n\n"
+            "## 必須要件\n"
+            "- 企業名・製品名・モデル名・人名などの固有名詞を最低3つ以上含めること（例: OpenAI, GPT-5, Anthropic, Gemini, NVIDIA）\n"
+            "- 本日特徴的だった具体的なトピック（新製品発表、買収、研究成果、規制動向等）に必ず触れること\n"
+            "- Top 記事の中身に踏み込んだ言及を含めること\n"
+            "- 「AI が進化している」「業界が活況」のような一般論や抽象表現は禁止\n"
+            "- 箇条書き禁止、自然な文章で記述\n\n"
+            f"{highlight_block}"
+            "## 部分サマリ\n"
+            + "\n\n".join(f"[{i + 1}] {s}" for i, s in enumerate(partial_summaries))
+            + "\n\n## 統合サマリ:\n"
+        )
+        try:
+            merged = await self.llm.generate(merge_prompt)
+            return merged.strip()
+        except LLMError as e:
+            logger.warning(f"summarize_all_articles 統合要約失敗: {e}")
+            return ""
+
+    @staticmethod
+    def _format_highlight_block(
+        highlight_articles: Optional[List[Dict[str, Any]]],
+    ) -> str:
+        """Top 記事ハイライトをプロンプトに差し込むテキストブロックに整形"""
+        if not highlight_articles:
+            return ""
+        lines = []
+        for i, a in enumerate(highlight_articles[:10], 1):
+            title = a.get("title", a.get("original_title", "")) or ""
+            summary = (
+                a.get("digest_summary")
+                or a.get("japanese_summary")
+                or a.get("summary", "")
+                or ""
+            )
+            lines.append(f"{i}. {title}: {summary[:150]}")
+        return "## 本日特に注目された Top 記事\n" + "\n".join(lines) + "\n\n"
+
+    async def _summarize_chunk(
+        self,
+        articles: List[Dict[str, Any]],
+        highlight_block: str = "",
+    ) -> str:
+        """チャンク単位で日本語俯瞰サマリを生成（失敗時は空文字）"""
+        if not articles:
+            return ""
+        lines = []
+        for a in articles:
+            title = a.get("title", a.get("original_title", ""))
+            summary = a.get("summary", a.get("snippet", "")) or ""
+            lines.append(f"- {title}: {summary[:200]}")
+        prompt = (
+            "あなたは AI / テクノロジーニュースの専門アナリストです。"
+            "以下は本日収集された AI 関連ニュース記事一覧（タイトル + 要約）です。"
+            "本日の AI 業界の動向を4〜6文の日本語でまとめてください。\n\n"
+            "## 必須要件\n"
+            "- 企業名・製品名・モデル名・人名などの固有名詞を最低3つ以上含めること\n"
+            "- 本日特徴的だった具体的なトピック（新製品発表、買収、研究成果、規制動向等）に必ず触れること\n"
+            "- 「AI が進化している」のような一般論や抽象表現は禁止\n"
+            "- 箇条書き禁止、自然な文章で記述\n\n"
+            f"{highlight_block}"
+            "## 記事一覧\n" + "\n".join(lines) + "\n\n## サマリ:\n"
+        )
+        try:
+            summary = await self.llm.generate(prompt)
+            return summary.strip()
+        except LLMError as e:
+            logger.warning(f"_summarize_chunk 失敗: {e}")
+            return ""
+
+
+WeeklyDigestProcessor = DigestProcessor

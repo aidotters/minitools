@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Added
+- **Google Alerts Daily Digest (`google-alert-daily-digest`)** (2026-05-09)
+  - 過去24時間の Google Alerts 記事から Top10 を Slack に配信する新規 CLI を追加
+  - 既存 `WeeklyDigestProcessor` を `DigestProcessor` にリファクタリング（週次/日次共通の汎用 Processor 化、`WeeklyDigestProcessor` は後方互換エイリアスとして維持）
+  - `DigestProcessor.summarize_all_articles()` を新設: 全記事（≤50件は単発、>50件は2段階 map-reduce）の俯瞰サマリ（4〜6文の日本語、固有名詞最低3つ）を生成し「今日のまとめ」として配信
+  - `SlackPublisher.format_daily_digest(date, articles, daily_summary="")` を追加: 「📝 今日のまとめ」+「🏆 今日の重要記事 Top N」の2セクション構成
+  - 設定: `defaults.daily_digest.{hours_back, top_articles, provider, summary_chunk_size}` を `settings.yaml` に追加
+  - 必要な環境変数: `NOTION_GOOGLE_ALERTS_DATABASE_ID`、`SLACK_GOOGLE_ALERTS_DAILY_DIGEST_WEBHOOK_URL`、`OPENAI_API_KEY`
+  - launchd 用 plist `scripts/launchd/com.tak.minitools.google-alert-daily-digest.plist` を同梱（毎日 19:00 ローカル時刻）
+
 ### Changed
 - **`medium` / `google_alerts` の翻訳デフォルトプロバイダを `ollama` → `gemini` に変更** (2026-05-03)
   - `defaults.medium.translate_provider`: `ollama` → `gemini`

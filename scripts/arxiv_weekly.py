@@ -213,8 +213,22 @@ Examples:
     parser.add_argument(
         "--top",
         type=int,
-        default=config.get("defaults.arxiv_weekly.top_papers", 10),
-        help="上位何件の論文を選出するか（デフォルト: 10）",
+        default=None,
+        help="LLMセクションの選出件数を上書き（--llm-top のショートカット）",
+    )
+
+    parser.add_argument(
+        "--hf-top",
+        type=int,
+        default=config.get("defaults.arxiv_weekly.hf_top_n", 5),
+        help="HFセクションの取得件数（デフォルト: 5）",
+    )
+
+    parser.add_argument(
+        "--llm-top",
+        type=int,
+        default=config.get("defaults.arxiv_weekly.llm_top_n", 5),
+        help="LLMセクションの取得件数（デフォルト: 5）",
     )
 
     # プロバイダーのデフォルト値: arxiv_weekly.provider → llm.provider の順でフォールバック
@@ -249,15 +263,14 @@ Examples:
 
     args = parser.parse_args()
 
-    # settings.yamlからhf_top_n, llm_top_nを取得
-    hf_top_n = config.get("defaults.arxiv_weekly.hf_top_n", 5)
-    llm_top_n = config.get("defaults.arxiv_weekly.llm_top_n", 5)
+    hf_top_n = args.hf_top
+    llm_top_n = args.top if args.top is not None else args.llm_top
+    top_n = llm_top_n
 
     logger.info("=" * 60)
     logger.info("ArXiv Weekly Digest")
     logger.info("=" * 60)
     logger.info(f"Days: {args.days}")
-    logger.info(f"Top papers: {args.top}")
     logger.info(f"HF top N: {hf_top_n}")
     logger.info(f"LLM top N: {llm_top_n}")
     logger.info(f"Provider: {args.provider}")
@@ -269,7 +282,7 @@ Examples:
     processed_count = asyncio.run(
         generate_digest(
             days=args.days,
-            top_n=args.top,
+            top_n=top_n,
             provider=args.provider,
             dry_run=args.dry_run,
             output_file=args.output,

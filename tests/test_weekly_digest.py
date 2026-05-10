@@ -3,8 +3,62 @@
 import json
 import pytest
 
-from minitools.processors.weekly_digest import WeeklyDigestProcessor
+from minitools.processors.weekly_digest import (
+    DigestProcessor,
+    WeeklyDigestProcessor,
+)
 from tests.conftest import MockLLMClient, MockEmbeddingClient
+
+
+def test_digest_processor_alias():
+    """WeeklyDigestProcessor は DigestProcessor のエイリアスである"""
+    assert WeeklyDigestProcessor is DigestProcessor
+
+
+@pytest.mark.asyncio
+async def test_summarize_all_articles_empty():
+    mock_llm = MockLLMClient()
+    processor = DigestProcessor(llm_client=mock_llm)
+    result = await processor.summarize_all_articles([])
+    assert result == ""
+    assert len(mock_llm.generate_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_summarize_all_articles_single_chunk():
+    """件数が chunk_size 以下の場合、LLM 1回呼び出し"""
+    mock_llm = MockLLMClient(chat_response="本日のサマリ。")
+    processor = DigestProcessor(llm_client=mock_llm)
+    articles = [{"title": f"Article {i}", "summary": f"summary {i}"} for i in range(5)]
+    result = await processor.summarize_all_articles(articles, chunk_size=50)
+    assert result == "本日のサマリ。"
+    assert len(mock_llm.generate_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_summarize_all_articles_two_stage():
+    """件数が chunk_size 超のとき2段階要約"""
+    mock_llm = MockLLMClient(chat_response="統合サマリ")
+    processor = DigestProcessor(llm_client=mock_llm)
+    articles = [{"title": f"A{i}", "summary": f"s{i}"} for i in range(7)]
+    result = await processor.summarize_all_articles(articles, chunk_size=3)
+    assert result == "統合サマリ"
+    # 3チャンク（3+3+1）の部分要約 + 1回の統合 = 4回
+    assert len(mock_llm.generate_calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_summarize_all_articles_llm_failure_returns_empty():
+    """LLM 失敗時は空文字を返し、例外を伝播しない"""
+    from minitools.llm.base import LLMError
+
+    class FailingLLM(MockLLMClient):
+        async def generate(self, prompt, model=None):
+            raise LLMError("simulated failure")
+
+    processor = DigestProcessor(llm_client=FailingLLM())
+    result = await processor.summarize_all_articles([{"title": "x", "summary": "y"}])
+    assert result == ""
 
 
 @pytest.mark.asyncio

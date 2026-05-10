@@ -52,7 +52,7 @@ flowchart TB
         SU["Summarizer"]
         FTT["FullTextTranslator"]
         VPR["VlmParseRepairer"]
-        WDP["WeeklyDigestProcessor"]
+        WDP["DigestProcessor (alias: WeeklyDigestProcessor)"]
         AWP["ArxivWeeklyProcessor"]
         XTP["XTrendProcessor"]
         DD["DuplicateDetector"]
@@ -143,6 +143,7 @@ flowchart TB
         google_alerts_translate["google_alerts_translate.py"]
         youtube["youtube.py"]
         google_alert_weekly_digest["google_alert_weekly_digest.py"]
+        google_alert_daily_digest["google_alert_daily_digest.py"]
         arxiv_weekly["arxiv_weekly.py"]
         x_trend["x_trend.py"]
         x_followings["x_followings.py"]
@@ -168,7 +169,7 @@ flowchart TB
         SU["Summarizer"]
         FTT["FullTextTranslator"]
         VPR["VlmParseRepairer"]
-        WDP["WeeklyDigestProcessor"]
+        WDP["DigestProcessor (alias: WeeklyDigestProcessor)"]
         AWP["ArxivWeeklyProcessor"]
         XTP["XTrendProcessor"]
         DD["DuplicateDetector"]
@@ -232,6 +233,10 @@ flowchart TB
     google_alert_weekly_digest --> NR
     google_alert_weekly_digest --> WDP
     google_alert_weekly_digest --> SP
+
+    google_alert_daily_digest --> NR
+    google_alert_daily_digest --> WDP
+    google_alert_daily_digest --> SP
 
     arxiv_weekly --> NR
     arxiv_weekly --> AWP
@@ -728,7 +733,7 @@ flowchart TB
 
 ### バッチスコアリング
 
-週次ダイジェスト（`WeeklyDigestProcessor`, `ArxivWeeklyProcessor`）では、バッチ処理により複数記事/論文を1回のLLM呼び出しでスコアリングします。
+週次/日次ダイジェスト（`DigestProcessor`（旧 `WeeklyDigestProcessor` のエイリアス）, `ArxivWeeklyProcessor`）では、バッチ処理により複数記事/論文を1回のLLM呼び出しでスコアリングします。`DigestProcessor` は `google-alert-weekly-digest` と `google-alert-daily-digest` の両方から再利用されます。
 
 ```mermaid
 flowchart LR

@@ -586,6 +586,69 @@ class SlackPublisher:
         sections = SlackPublisher.format_x_trend_digest_sections(process_result)
         return "\n".join(sections)
 
+    def format_daily_digest(
+        self,
+        date: str,
+        articles: list[dict[str, Any]],
+        daily_summary: str = "",
+    ) -> str:
+        """
+        日次ダイジェストをSlackメッセージ形式にフォーマット
+
+        Args:
+            date: 対象日（YYYY-MM-DD形式）
+            articles: 上位記事リスト（importance_score / title / summary / url）
+            daily_summary: 「今日のまとめ」本文。空文字なら省略
+
+        Returns:
+            フォーマットされたメッセージ
+        """
+        header = f"*📰 Google Alerts Daily Digest ({date})*"
+        divider = "─" * 30
+
+        if not articles:
+            return f"{header}\n本日該当記事なし"
+
+        message = header + "\n\n"
+
+        if daily_summary:
+            message += "*📝 今日のまとめ*\n"
+            message += divider + "\n"
+            message += f"{daily_summary}\n\n"
+
+        message += f"*🏆 今日の重要記事 Top {len(articles)}*\n"
+        message += divider + "\n\n"
+
+        for i, article in enumerate(articles, 1):
+            title = article.get("title", article.get("original_title", "タイトルなし"))
+            score = article.get("importance_score", 0)
+            try:
+                score_str = f"{float(score):.1f}"
+            except (TypeError, ValueError):
+                score_str = "0.0"
+
+            summary = (
+                article.get("digest_summary")
+                or article.get("japanese_summary")
+                or article.get("summary", "")
+                or ""
+            )
+            if summary:
+                summary = summary.replace("\n", " ").strip()
+                if len(summary) > 200:
+                    summary = summary[:197] + "..."
+
+            url = article.get("url", "")
+
+            message += f"`[{score_str}]` *{i}. {title}*\n"
+            if summary:
+                message += f"   {summary}\n"
+            if url:
+                message += f"   🔗 {url}\n"
+            message += "\n"
+
+        return message.rstrip() + "\n"
+
     async def send_weekly_digest(
         self,
         start_date: str,
