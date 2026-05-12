@@ -128,11 +128,15 @@ class DigestProcessor:
             "defaults.weekly_digest.batch_size", 20
         )
         # 重複除去設定
-        self.dedup_enabled = config.get("weekly_digest.deduplication.enabled", True)
-        self.similarity_threshold = config.get(
-            "weekly_digest.deduplication.similarity_threshold", 0.85
+        self.dedup_enabled = config.get(
+            "defaults.weekly_digest.deduplication.enabled", True
         )
-        self.buffer_ratio = config.get("weekly_digest.deduplication.buffer_ratio", 2.5)
+        self.similarity_threshold = config.get(
+            "defaults.weekly_digest.deduplication.similarity_threshold", 0.85
+        )
+        self.buffer_ratio = config.get(
+            "defaults.weekly_digest.deduplication.buffer_ratio", 2.5
+        )
         logger.info(
             f"DigestProcessor initialized "
             f"(max_concurrent={self.max_concurrent}, "

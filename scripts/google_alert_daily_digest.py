@@ -127,11 +127,20 @@ async def generate_digest(
     # スコアリング
     scored = await processor.rank_articles_by_importance(articles)
 
-    # 重複除去 + 上位選出
+    # 重複除去 + 上位選出（Daily 用の閾値・倍率を settings.yaml から取得して override）
+    daily_dedup_enabled = config.get(
+        "defaults.daily_digest.deduplication.enabled", True
+    )
+    daily_threshold = config.get(
+        "defaults.daily_digest.deduplication.similarity_threshold", 0.75
+    )
+    daily_buffer = config.get("defaults.daily_digest.deduplication.buffer_ratio", 3.0)
     top_articles = await processor.select_top_articles(
         scored,
         top_n=top_n,
-        deduplicate=False if no_dedup else None,
+        deduplicate=False if no_dedup else daily_dedup_enabled,
+        similarity_threshold=daily_threshold,
+        buffer_ratio=daily_buffer,
     )
 
     # 各記事の要約（先に生成して「今日のまとめ」のハイライト入力にも使う）

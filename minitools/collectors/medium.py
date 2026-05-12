@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup, Tag
 
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -107,9 +108,22 @@ class MediumCollector:
                     creds = pickle.load(token)
 
             if not creds or not creds.valid:
+                refreshed = False
                 if creds and creds.expired and creds.refresh_token:
-                    creds.refresh(Request())
-                else:
+                    try:
+                        creds.refresh(Request())
+                        refreshed = True
+                    except RefreshError as e:
+                        logger.warning(
+                            f"リフレッシュトークンが失効しました ({e})。再認証を行います。"
+                        )
+                        try:
+                            os.remove(token_path)
+                        except FileNotFoundError:
+                            pass
+                        creds = None
+
+                if not refreshed:
                     if not os.path.exists(self.credentials_path):
                         raise FileNotFoundError(
                             f"認証ファイル {self.credentials_path} が見つかりません"
