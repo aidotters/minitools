@@ -54,20 +54,20 @@ class MockEmbeddingClient(BaseEmbeddingClient):
         self.embed_text_calls: List[str] = []
 
     def _generate_embedding(self, text: str, index: int = 0) -> List[float]:
-        """テキストから擬似的なembeddingを生成（異なるテキストは異なるembeddingになる）"""
+        """テキストから擬似的なembeddingを生成（異なるテキストは異なるembeddingになる）
+
+        高次元の独立Gauss乱数ベクトルは期待的にほぼ直交（cosine類似度 ~ 1/√d）になるため、
+        異なるテキストは閾値0.95を確実に下回り、同一テキストは完全一致する。
+        hashlibで決定論的にシードするため、Pythonのhash randomizationの影響を受けない。
+        """
+        import hashlib
         import math
+        import random
 
-        # テキストのハッシュを使って異なる基準点を生成
-        text_hash = hash(text)
+        seed = int.from_bytes(hashlib.sha256(text.encode("utf-8")).digest()[:8], "big")
+        rng = random.Random(seed)
+        embedding = [rng.gauss(0.0, 1.0) for _ in range(self.embedding_dim)]
 
-        embedding = []
-        for j in range(self.embedding_dim):
-            # 各次元で異なる値を生成
-            # sin/cosを使って-1〜1の範囲で分散させる
-            val = math.sin((text_hash + j * 31) / 1000.0)
-            embedding.append(val)
-
-        # ノルムを1に正規化
         norm = math.sqrt(sum(v * v for v in embedding))
         if norm > 0:
             embedding = [v / norm for v in embedding]

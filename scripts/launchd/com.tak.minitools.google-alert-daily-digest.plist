@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tak.minitools.google-alert-daily-digest</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/uv</string>
+        <string>run</string>
+        <string>google-alert-daily-digest</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/tak/Projects/minitools</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/Users/tak/.asdf/shims:/opt/homebrew/bin</string>
+    </dict>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>19</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/tak/Projects/minitools/logs/google-alert-daily-digest.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tak/Projects/minitools/logs/google-alert-daily-digest.log</string>
+</dict>
+</plist>

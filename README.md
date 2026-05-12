@@ -493,6 +493,48 @@ uv run google-alert-weekly-digest --no-dedup
 uv run google-alert-weekly-digest --embedding openai
 ```
 
+#### Google Alerts日次ダイジェスト
+```bash
+# 過去24時間の上位10記事を Slack に送信（毎晩 19:00 JST に launchd で実行する想定）
+google-alert-daily-digest
+# または
+uv run google-alert-daily-digest --hours 24 --top 10
+
+# プレビュー（Slack に送信しない）
+uv run google-alert-daily-digest --dry-run
+
+# 0件のときは送信せず終了
+uv run google-alert-daily-digest --quiet
+
+# OpenAI 以外の LLM を使う
+uv run google-alert-daily-digest --provider gemini
+
+# 重複除去をスキップ
+uv run google-alert-daily-digest --no-dedup
+
+# Embedding プロバイダーを個別指定
+uv run google-alert-daily-digest --embedding openai
+
+# 出力ファイルにも保存
+uv run google-alert-daily-digest --output outputs/daily.md
+```
+
+Slack メッセージは「📝 今日のまとめ」（過去24時間の全記事を俯瞰した4〜6文の日本語サマリ）と「🏆 今日の重要記事 Top N」の2セクションで構成される。
+
+##### launchd で毎日 19:00 JST に自動実行
+1. `which uv` で uv の絶対パスを確認し、必要なら `scripts/launchd/com.tak.minitools.google-alert-daily-digest.plist` の `ProgramArguments` を書き換える
+2. `WorkingDirectory` と `StandardOutPath` / `StandardErrorPath` を自分の環境に合わせて書き換える（plist 内の `tak` を自分のユーザ名に置換）
+3. plist を LaunchAgents にコピーしてロード:
+   ```bash
+   cp scripts/launchd/com.tak.minitools.google-alert-daily-digest.plist ~/Library/LaunchAgents/
+   launchctl load ~/Library/LaunchAgents/com.tak.minitools.google-alert-daily-digest.plist
+   ```
+4. 動作確認: `launchctl start com.tak.minitools.google-alert-daily-digest`
+5. 停止: `launchctl unload ~/Library/LaunchAgents/com.tak.minitools.google-alert-daily-digest.plist`
+
+アプリログは `outputs/logs/google_alert_daily_digest.log`、launchd の標準出力/エラーは plist の `StandardOutPath` / `StandardErrorPath`（デフォルト `logs/google-alert-daily-digest.log`）に出力される。
+必要な環境変数: `NOTION_GOOGLE_ALERTS_DATABASE_ID`、`SLACK_GOOGLE_ALERTS_DAILY_DIGEST_WEBHOOK_URL`、`OPENAI_API_KEY`（既定プロバイダ使用時）。
+
 #### ArXiv週次ダイジェスト
 ```bash
 # 過去7日間の論文をSlackに送信（2層構成: HF upvotes + LLMスコア）

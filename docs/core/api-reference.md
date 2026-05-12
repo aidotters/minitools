@@ -1365,15 +1365,17 @@ points = await summarizer.extract_key_points(
 
 ---
 
-### WeeklyDigestProcessor
+### DigestProcessor
 
-週次ダイジェストを生成するプロセッサ。バッチ処理により高速なスコアリングを実現。
+週次/日次共通の汎用ダイジェスト Processor。記事リストを受け取り、重要度スコアリング・重複除去・トレンド総括・記事要約・全記事俯瞰サマリを生成する。期間（週次/日次）に依存しない設計のため、呼び出し側で取得期間を制御することで `google-alert-weekly-digest` と `google-alert-daily-digest` の両方から再利用される。
+
+`WeeklyDigestProcessor` は `DigestProcessor` のエイリアス（後方互換）。
 
 **ファイル:** `minitools/processors/weekly_digest.py`
 
 ```python
-class WeeklyDigestProcessor:
-    """週次ダイジェスト生成プロセッサ"""
+class DigestProcessor:
+    """週次/日次共通の汎用ダイジェスト Processor"""
 
     def __init__(
         self,
@@ -1481,7 +1483,33 @@ class WeeklyDigestProcessor:
             - total_articles: 処理した記事総数
             - duplicate_groups: 検出した重複グループ数（重複除去時のみ）
         """
+
+    async def summarize_all_articles(
+        self,
+        articles: List[Dict[str, Any]],
+        *,
+        chunk_size: int = 50,
+        highlight_articles: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """
+        その日（または期間内）の全記事を俯瞰した日本語サマリ（4〜6文）を LLM で生成
+
+        - 入力件数 ≤ chunk_size: 単発 LLM 呼び出し
+        - 入力件数 > chunk_size: 2段階要約（チャンク並列要約 → 統合要約）
+        - LLM 失敗時は空文字を返す（呼び出し側で省略表示にフォールバック）
+        - 固有名詞（企業名・モデル名）を最低3つ含めるようプロンプト指示
+
+        Args:
+            articles: 記事リスト（dedup 済み・Top N 絞り込み前を想定）
+            chunk_size: 単発要約の上限件数（デフォルト: 50）
+            highlight_articles: 当日 Top N 記事（要約に踏み込ませる追加コンテキスト）
+
+        Returns:
+            4〜6文の日本語サマリ。失敗時は空文字
+        """
 ```
+
+`google-alert-daily-digest` では、`rank_articles_by_importance` → `select_top_articles` → `generate_article_summaries` → `summarize_all_articles`（全記事 + Top N をハイライトとして渡す）の順に呼び出し、Slack 用の「今日のまとめ」セクションを生成する。
 
 **使用例:**
 ```python
@@ -1490,7 +1518,7 @@ from minitools.llm import get_llm_client, get_embedding_client
 llm = get_llm_client(provider="ollama")
 embedding = get_embedding_client(provider="ollama")
 
-processor = WeeklyDigestProcessor(
+processor = DigestProcessor(
     llm_client=llm,
     embedding_client=embedding
 )
@@ -2453,6 +2481,29 @@ class SlackPublisher:
 
         Returns:
             送信成功の場合True
+        """
+
+    def format_daily_digest(
+        self,
+        date: str,
+        articles: List[Dict[str, Any]],
+        daily_summary: str = ""
+    ) -> str:
+        """
+        日次ダイジェストをSlackメッセージ形式にフォーマット
+
+        構成:
+        - ヘッダー: `📰 Google Alerts Daily Digest ({date})`
+        - `📝 今日のまとめ`セクション（daily_summary 空文字なら省略）
+        - `🏆 今日の重要記事 Top N`セクション（importance_score / title / summary / url）
+
+        Args:
+            date: 対象日（YYYY-MM-DD形式）
+            articles: 上位記事リスト
+            daily_summary: 「今日のまとめ」本文。空文字なら省略
+
+        Returns:
+            フォーマットされたメッセージ（articles が空のときは「本日該当記事なし」のみ）
         """
 
     def format_weekly_digest(
