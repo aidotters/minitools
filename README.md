@@ -368,7 +368,16 @@ uv run medium-translate --url "https://..." --provider openai
 
 # プレビュー（Notionに保存しない）
 uv run medium-translate --url "https://..." --cdp --dry-run
+
+# 取得 HTML をダンプするデバッグモード
+uv run medium-translate --url "https://..." --cdp --debug
 ```
+
+**動作仕様:**
+- 指定 URL が Notion Medium DB の既存ページにマッチする場合: 翻訳本文を末尾に追記し `Translated` を `True` に更新
+- 既存ページが無い場合: 記事 HTML からメタデータ（タイトル / 著者 / 公開日 / 拍手数）を抽出し、日本語タイトル翻訳・日本語要約と共に Notion へ**新規ページを作成**
+- 既に `Translated=True` のページはスキップ
+- 起動時に Notion DB に `Translated` (checkbox) プロパティが存在することを検証し、不足時はエラー終了
 
 **必要なセットアップ:**
 ```bash

@@ -133,12 +133,16 @@ sequenceDiagram
     participant Chrome as Chrome (CDP)
     participant MDC as MarkdownConverter
     participant FTT as FullTextTranslator
-    participant LLM as LLM Client
+    participant LLM as LLM Client (翻訳/タイトル/要約)
     participant NBB as NotionBlockBuilder
     participant NP as NotionPublisher
     participant Notion
 
     User->>CLI: medium-translate --url "https://..." --cdp --provider gemini
+    CLI->>NP: ensure_translated_property(database_id)
+    NP->>Notion: databases.retrieve()
+    Notion-->>NP: schema
+    NP-->>CLI: True (or fail-fast)
 
     CLI->>MS: __aenter__(cdp_mode=True)
     MS->>Chrome: connect_over_cdp(localhost:9222)
@@ -168,20 +172,33 @@ sequenceDiagram
         alt not dry-run
             CLI->>NP: find_page_by_url(database_id, url)
             NP->>Notion: databases.query(filter=url)
-            Notion-->>NP: page + properties
-            NP-->>CLI: PageInfo(page_id, is_translated)
+            Notion-->>NP: page + properties (or None)
+            NP-->>CLI: PageInfo or None
 
-            alt is_translated == true
+            alt PageInfo.is_translated == true
                 Note over CLI: 翻訳済みのためスキップ
-            else is_translated == false
+            else PageInfo exists & not translated
                 CLI->>NBB: build_blocks(translated_markdown)
-                NBB-->>CLI: blocks[]
-
+                NBB-->>CLI: blocks[]（先頭 divider 付）
                 CLI->>NP: append_blocks(page_id, blocks)
-                Note over NP: 100ブロック単位でバッチ追記
                 NP->>Notion: blocks.children.append()
                 Notion-->>NP: OK
-                NP-->>CLI: success
+                CLI->>NP: update_page_properties(Translated=true)
+                NP->>Notion: pages.update()
+            else PageInfo is None (新規 URL)
+                Note over CLI: HTML からメタデータ抽出<br/>(title/author/date/claps)
+                CLI->>LLM: _translate_title(english_title)
+                LLM-->>CLI: japanese_title
+                CLI->>LLM: _summarize_japanese(translated_markdown)
+                LLM-->>CLI: japanese_summary
+                CLI->>NP: create_page(database_id, properties)
+                Note over NP: Title / Japanese Title / URL / Author /<br/>Date / Summary / Claps / Translated=true
+                NP->>Notion: pages.create()
+                Notion-->>NP: page_id
+                CLI->>NBB: build_blocks(translated_markdown)
+                NBB-->>CLI: blocks[]（先頭 divider 除去）
+                CLI->>NP: append_blocks(page_id, blocks)
+                NP->>Notion: blocks.children.append()
             end
         end
     end

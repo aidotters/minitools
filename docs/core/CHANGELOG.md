@@ -5,6 +5,18 @@
 ## [Unreleased]
 
 ### Added
+- **`medium-translate` の未登録 URL 自動新規ページ作成** (2026-05-14)
+  - 従来は Notion Medium DB に該当ページが存在しない URL を `skipped` として扱っていたが、新規ページを作成して翻訳本文を投入するように変更
+  - 記事 HTML から `title` / `author` / `published_at` / `claps` を抽出する `_extract_medium_metadata()` を新規追加（meta タグ、`data-testid`、JSON-LD、`headerClapButton` 近傍走査）
+  - LLM による日本語タイトル翻訳 (`_translate_title`) と日本語 200 文字要約 (`_summarize_japanese`) を新規ページ作成時に実行
+  - `build_new_page_metadata()` / `build_new_page_properties()` を追加し、`Title` / `Japanese Title` / `URL` / `Author` / `Date` / `Summary` / `Translated=True` / `Claps` を 1 回の `create_page` で投入
+  - 起動時に `ensure_translated_property()` で Notion DB に `Translated` (checkbox) プロパティが存在することを検証
+  - 新規ページ作成時は先頭 divider ブロックを除去（既存ページ追記時のみ divider 付与）
+  - 既存ページがある場合の挙動（本文 append + Translated 更新）は従来通り
+  - `--debug` フラグを追加: 取得した HTML を `outputs/medium_translate_debug/{timestamp}_{slug}.html` にダンプ
+  - `scripts/medium_translate.py` が `minitools.llm.get_llm_client` / `BaseLLMClient` と `bs4.BeautifulSoup` に新規依存
+  - テスト: `tests/test_medium_translate.py` を新規追加（メタデータ抽出・properties 構築・clap 解析の単体テスト）
+
 - **Google Alerts Daily Digest (`google-alert-daily-digest`)** (2026-05-09)
   - 過去24時間の Google Alerts 記事から Top10 を Slack に配信する新規 CLI を追加
   - 既存 `WeeklyDigestProcessor` を `DigestProcessor` にリファクタリング（週次/日次共通の汎用 Processor 化、`WeeklyDigestProcessor` は後方互換エイリアスとして維持）

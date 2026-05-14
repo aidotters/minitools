@@ -209,6 +209,7 @@ flowchart TB
     medium_translate --> FTT
     medium_translate --> NBB
     medium_translate --> NP
+    medium_translate -.->|"title/summary translation"| LLM["LLM Client (get_llm_client)"]
 
     arxiv_translate --> AS
     arxiv_translate --> VPR

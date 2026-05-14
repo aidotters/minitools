@@ -94,6 +94,7 @@ minitools/
 │   ├── test_markdown_converter.py # Markdown変換テスト
 │   ├── test_medium_collector.py  # Medium収集テスト
 │   ├── test_medium_scraper.py    # Mediumスクレイパーテスト
+│   ├── test_medium_translate.py  # Medium全文翻訳テスト
 │   ├── test_notion_arxiv.py      # Notion ArXivテスト
 │   ├── test_notion_block_builder.py # Notionブロックビルダーテスト
 │   ├── test_notion_publisher.py  # Notionパブリッシャーテスト
