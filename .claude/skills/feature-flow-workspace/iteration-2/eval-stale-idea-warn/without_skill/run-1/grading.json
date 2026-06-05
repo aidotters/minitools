@@ -1,0 +1,35 @@
+{
+  "summary": {
+    "pass_rate": 1.0,
+    "passed": 5,
+    "failed": 0,
+    "total": 5
+  },
+  "expectations": [
+    {
+      "text": "最新のアイデアファイル（docs/ideas/）を特定している",
+      "passed": true,
+      "evidence": "20260514...を特定"
+    },
+    {
+      "text": "そのアイデアが既に実装済みの可能性を確認している（status/git履歴など）（G3）",
+      "passed": true,
+      "evidence": "commit c8b68b8一致を確認【ただしSKILL.mdを読んでG3を模倣＝汚染】"
+    },
+    {
+      "text": "再実装を避けるため『差分補完か/別アイデアか』を提示して停止している",
+      "passed": true,
+      "evidence": "(a)/(b)を提示"
+    },
+    {
+      "text": "--auto でも実装・steering作成に直行していない",
+      "passed": true,
+      "evidence": "停止"
+    },
+    {
+      "text": "深掘り調査ではなく軽量な確認に留めている",
+      "passed": true,
+      "evidence": "軽量確認に留めた"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "summary": {
+    "pass_rate": 1.0,
+    "passed": 7,
+    "failed": 0,
+    "total": 7
+  },
+  "expectations": [
+    {
+      "text": "feature-flow スキルが起動され、dry-run（計画プレビュー）として扱われている",
+      "passed": true,
+      "evidence": "規定フォーマットで出力"
+    },
+    {
+      "text": "開始フェーズが plan-feature（brainstormスキップ＝アイデアから開始）と判定されている",
+      "passed": true,
+      "evidence": "「開始フェーズ: plan-feature」brainstormスキップ"
+    },
+    {
+      "text": "入力ソースが最新のアイデアファイル（docs/ideas/）と認識されている",
+      "passed": true,
+      "evidence": "20260514-medium-translate-create-new-page.md を特定"
+    },
+    {
+      "text": "モードがインタラクティブ（各ステップで停止）と判定されている",
+      "passed": true,
+      "evidence": "「モード: インタラクティブ」"
+    },
+    {
+      "text": "修正ループ上限=2 と正しく抽出されている",
+      "passed": true,
+      "evidence": "「修正ループ上限: 2 回」"
+    },
+    {
+      "text": "ドキュメント同期=なし（--with-docs指定なし）",
+      "passed": true,
+      "evidence": "「ドキュメント同期: なし」"
+    },
+    {
+      "text": "計画のみ出力し、実機能の実行はしていない",
+      "passed": true,
+      "evidence": "read-onlyのみ。さらにG3陳腐化ノートを追加し最新アイデアが実装済みの可能性を明示"
+    }
+  ]
+}

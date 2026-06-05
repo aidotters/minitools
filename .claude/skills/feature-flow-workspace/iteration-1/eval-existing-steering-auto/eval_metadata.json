@@ -1,0 +1,14 @@
+{
+  "eval_id": 2,
+  "eval_name": "existing-steering-auto",
+  "prompt": "/feature-flow 20260530-x-trend-v2 --auto --dry-run",
+  "assertions": [
+    {"text": "開始フェーズが implement-feature と明記されている", "type": "manual"},
+    {"text": "brainstorm と plan-feature がスキップされると明記されている", "type": "manual"},
+    {"text": "モードが 自動(--auto) と判定されている", "type": "manual"},
+    {"text": "入力ソースが steeringフォルダ 20260530-x-trend-v2 と認識されている（YYYYMMDD-形式の判定）", "type": "manual"},
+    {"text": "ドキュメント同期=なし と出力されている", "type": "manual"},
+    {"text": "実行フェーズが implement-feature→acceptance-test→validate-code のみ", "type": "manual"},
+    {"text": "dry-run であり実行していない", "type": "manual"}
+  ]
+}

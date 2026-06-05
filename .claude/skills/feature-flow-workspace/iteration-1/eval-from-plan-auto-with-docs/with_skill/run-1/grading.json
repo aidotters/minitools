@@ -1,0 +1,55 @@
+{
+  "expectations": [
+    {
+      "text": "開始フェーズが plan-feature と明記されている",
+      "passed": true,
+      "evidence": "「開始フェーズ: plan-feature」"
+    },
+    {
+      "text": "brainstorm がスキップされると明記されている",
+      "passed": true,
+      "evidence": "「1. brainstorm — スキップ（--from-plan 指定のため）」"
+    },
+    {
+      "text": "モードが 自動(--auto) と判定されている",
+      "passed": true,
+      "evidence": "「モード: 自動(--auto)」"
+    },
+    {
+      "text": "ドキュメント同期=あり と出力されている",
+      "passed": true,
+      "evidence": "「ドキュメント同期: あり(--with-docs)」"
+    },
+    {
+      "text": "フェーズ列に update-docs と review-docs が含まれる",
+      "passed": true,
+      "evidence": "フェーズ6 update-docs / 7 review-docs を自動として列挙"
+    },
+    {
+      "text": "入力ソースが計画ファイル medium-cache と認識されている",
+      "passed": true,
+      "evidence": "「入力ソース: 計画ファイル medium-cache」"
+    },
+    {
+      "text": "検証修正ループの自動修正=有効 と出力されている",
+      "passed": true,
+      "evidence": "「自動修正: 有効(--auto)」"
+    },
+    {
+      "text": "停止ポイントが plan-feature 承認のみ（implement以降は自動）",
+      "passed": true,
+      "evidence": "停止ポイントに plan-feature 承認のみを記載し理由も説明"
+    },
+    {
+      "text": "dry-run であり実行していない",
+      "passed": true,
+      "evidence": "plan.md保存のみ、実行なし"
+    }
+  ],
+  "summary": {
+    "pass_rate": 1.0,
+    "passed": 9,
+    "failed": 0,
+    "total": 9
+  }
+}

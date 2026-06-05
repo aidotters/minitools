@@ -1,0 +1,12 @@
+{
+  "eval_id": 4,
+  "eval_name": "missing-plan-halt",
+  "prompt": "/feature-flow --from-plan zzz-nonexistent-plan --auto",
+  "assertions": [
+    {"text": "指定された計画 zzz-nonexistent-plan が docs/plan/ に存在しないことを検出している", "type": "manual"},
+    {"text": "--auto でも『新規機能』と推測して実装に進まず停止している（G1）", "type": "manual"},
+    {"text": "『新規作成するか/別名を指定するか』をユーザーに確認している", "type": "manual"},
+    {"text": ".steeringフォルダ作成・実装・ファイル変更を一切していない", "type": "manual"},
+    {"text": "存在しない機能のスコープを勝手に推測・捏造していない", "type": "manual"}
+  ]
+}

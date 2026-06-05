@@ -1,0 +1,14 @@
+{
+  "eval_id": 0,
+  "eval_name": "full-flow-from-name",
+  "prompt": "/feature-flow ユーザー認証機能 --dry-run",
+  "assertions": [
+    {"text": "開始フェーズが brainstorm と明記されている", "type": "manual"},
+    {"text": "モードがインタラクティブ（--autoなし）と判定されている", "type": "manual"},
+    {"text": "ドキュメント同期=なし と出力されている", "type": "manual"},
+    {"text": "修正ループ上限=3（デフォルト）と出力されている", "type": "manual"},
+    {"text": "停止ポイントに brainstorm と plan-feature の両方が含まれる", "type": "manual"},
+    {"text": "フェーズ列が brainstorm→plan-feature→implement-feature→acceptance-test→validate-code の正しい順序", "type": "manual"},
+    {"text": "dry-run であり実機能の実装・ファイル作成を一切していない", "type": "manual"}
+  ]
+}

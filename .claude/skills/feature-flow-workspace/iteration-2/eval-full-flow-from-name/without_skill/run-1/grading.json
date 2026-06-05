@@ -1,0 +1,45 @@
+{
+  "expectations": [
+    {
+      "text": "開始フェーズが brainstorm と明記されている",
+      "passed": true,
+      "evidence": "「開始フェーズ: brainstorm」と判定（サブスキルが発見可能なため推論成功）"
+    },
+    {
+      "text": "モードがインタラクティブ（--autoなし）と判定されている",
+      "passed": true,
+      "evidence": "「実行モード: インタラクティブ」"
+    },
+    {
+      "text": "ドキュメント同期=なし と出力されている",
+      "passed": true,
+      "evidence": "「ドキュメント同期: なし」"
+    },
+    {
+      "text": "修正ループ上限=3（デフォルト）と出力されている",
+      "passed": true,
+      "evidence": "「修正ループ上限: 3（デフォルト）」。ただし架空フラグ --max-iter を発明"
+    },
+    {
+      "text": "停止ポイントに brainstorm と plan-feature の両方が含まれる",
+      "passed": true,
+      "evidence": "brainstorm完了後/plan-feature完了後を列挙"
+    },
+    {
+      "text": "フェーズ列が brainstorm→plan-feature→implement-feature→acceptance-test→validate-code の正しい順序",
+      "passed": true,
+      "evidence": "正しい順序を提示"
+    },
+    {
+      "text": "dry-run であり実機能の実装・ファイル作成を一切していない",
+      "passed": true,
+      "evidence": "計画提示のみ"
+    }
+  ],
+  "summary": {
+    "pass_rate": 1.0,
+    "passed": 7,
+    "failed": 0,
+    "total": 7
+  }
+}

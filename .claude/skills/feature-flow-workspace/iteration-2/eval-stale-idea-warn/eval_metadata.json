@@ -1,0 +1,12 @@
+{
+  "eval_id": 5,
+  "eval_name": "stale-idea-warn",
+  "prompt": "/feature-flow --from-idea --auto",
+  "assertions": [
+    {"text": "最新のアイデアファイル（docs/ideas/）を特定している", "type": "manual"},
+    {"text": "そのアイデアが既に実装済みの可能性を確認している（status/git履歴など）（G3）", "type": "manual"},
+    {"text": "再実装を避けるため『差分補完か/別アイデアか』を提示して停止している", "type": "manual"},
+    {"text": "--auto でも実装・steering作成に直行していない", "type": "manual"},
+    {"text": "深掘り調査ではなく軽量な確認に留めている", "type": "manual"}
+  ]
+}
