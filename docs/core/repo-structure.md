@@ -70,6 +70,8 @@ minitools/
 │   ├── arxiv_weekly.py            # arxiv-weekly コマンド
 │   ├── x_trend.py                 # x-trend コマンド
 │   ├── x_followings.py            # x-followings コマンド
+│   ├── scrape_medium.py           # scrape-medium コマンド（Medium英語原文Markdown出力）
+│   ├── discover_notion_medium.py  # discover-notion-medium コマンド（Notion Medium DB→JSON）
 │   └── launchd/                   # macOS launchd plist（定期実行設定）
 │       └── com.tak.minitools.google-alert-daily-digest.plist
 │
@@ -237,6 +239,8 @@ LLMを使用してコンテンツを処理するモジュール群。
 | `arxiv_weekly.py` | `arxiv-weekly` | ArXiv週次ダイジェストの生成・Slack通知 |
 | `x_trend.py` | `x-trend` | X トレンドの収集・AI関連フィルタ・Slack通知 |
 | `x_followings.py` | `x-followings` | X フォロー中アカウント一覧取得・YAML出力 |
+| `scrape_medium.py` | `scrape-medium` | Medium記事の英語原文Markdownをstdout出力（翻訳なし、`MediumScraper` + `MarkdownConverter` を再利用） |
+| `discover_notion_medium.py` | `discover-notion-medium` | Notion Medium DBから直近N日分の記事をJSON配列でstdout出力（`NotionReader` を再利用） |
 
 ## 新規コンポーネント追加手順
 
@@ -396,6 +400,8 @@ arxiv-weekly = "scripts.arxiv_weekly:main"
 arxiv-translate = "scripts.arxiv_translate:main"
 x-trend = "scripts.x_trend:main"
 x-followings = "scripts.x_followings:main"
+scrape-medium = "scripts.scrape_medium:main"
+discover-notion-medium = "scripts.discover_notion_medium:main"
 # 新規追加
 new-source = "scripts.new_source:main"
 ```

@@ -5,6 +5,16 @@
 ## [Unreleased]
 
 ### Added
+- **`scrape-medium` / `discover-notion-medium` コマンド追加（llm-wiki 連携用）** (2026-06-06)
+  - `scrape-medium`: Medium 記事 URL を受け取り、英語原文 Markdown を stdout に出力する CLI を追加（翻訳・要約・Notion 保存は行わない）。既存 `MediumScraper` + `MarkdownConverter` を再利用
+    - `--cdp` フラグでログイン済み Chrome に CDP 接続（Cloudflare 回避、推奨）。未指定時はスタンドアロン Playwright
+    - 成功時 exit 0 / stdout に Markdown、失敗時 exit 1 / stderr にエラー
+  - `discover-notion-medium`: Notion Medium DB から直近 N 日分の記事を JSON 配列で stdout 出力する CLI を追加。既存 `NotionReader.get_articles_by_date_range()` を再利用
+    - 出力フィールド: `url` / `title` / `japanese_title` / `claps` / `summary` / `date` / `author`（日付降順、未登録は空文字列、`claps` は整数、0 件時は `[]`）
+    - DB ID 解決順: `--database-id` → `NOTION_MEDIUM_DATABASE_ID` → `NOTION_DB_ID_DAILY_DIGEST`。`NOTION_API_KEY` 必須
+  - 両スクリプトとも `_redirect_logging_to_stderr()` で既存ロガーの stdout ハンドラを stderr に向け直し、stdout を出力データ（Markdown / JSON）専用に保つ（`setup_logger()` が stdout 出力のため）
+  - `pyproject.toml` の `[project.scripts]` に `scrape-medium` / `discover-notion-medium` を追加
+
 - **`medium-translate` の未登録 URL 自動新規ページ作成** (2026-05-14)
   - 従来は Notion Medium DB に該当ページが存在しない URL を `skipped` として扱っていたが、新規ページを作成して翻訳本文を投入するように変更
   - 記事 HTML から `title` / `author` / `published_at` / `claps` を抽出する `_extract_medium_metadata()` を新規追加（meta タグ、`data-testid`、JSON-LD、`headerClapButton` 近傍走査）
