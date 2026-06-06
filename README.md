@@ -391,6 +391,40 @@ playwright install chromium
 GEMINI_API_KEY=your-gemini-api-key  # Geminiプロバイダー使用時
 ```
 
+#### Medium記事スクレイプ（英語原文Markdown出力）
+```bash
+# Medium記事の英語原文Markdownをstdoutに出力（翻訳・要約・Notion保存は行わない）
+uv run scrape-medium --url "https://medium.com/..."
+
+# CDPモード（ログイン済みChrome利用、Cloudflare回避、推奨）
+uv run scrape-medium --url "https://medium.com/..." --cdp
+```
+
+**動作仕様:**
+- stdout に英語原文 Markdown（YAML フロントマターなし）のみを出力。ログは stderr に出力されるため `> article.md` でリダイレクト可能
+- `--cdp` 未指定時はスタンドアロン Playwright（内蔵 Chromium）で実行（Cloudflare にブロックされる可能性あり）
+- 成功時 exit 0、失敗時 exit 1（stderr にエラーメッセージ）
+- 既存の `MediumScraper` + `MarkdownConverter` を再利用。外部ツール（llm-wiki 等）からの呼び出しを想定
+
+#### Notion Medium DB からの記事発見（JSON出力）
+```bash
+# Notion Medium DB から直近7日分の記事をJSON配列でstdoutに出力
+uv run discover-notion-medium
+
+# 直近3日分
+uv run discover-notion-medium --days 3
+
+# DB ID を明示指定
+uv run discover-notion-medium --days 7 --database-id "abc123"
+```
+
+**動作仕様:**
+- stdout に JSON 配列（`url` / `title` / `japanese_title` / `claps` / `summary` / `date` / `author`）を日付降順で出力。0 件時も `[]` を出力
+- 未登録フィールドは空文字列 `""`（`null` にしない）、`claps` は整数
+- DB ID は `--database-id` → `NOTION_MEDIUM_DATABASE_ID` → `NOTION_DB_ID_DAILY_DIGEST` の順で解決
+- `NOTION_API_KEY` 必須。未設定時は exit 1
+- 既存の `NotionReader` を再利用。外部ツール（llm-wiki 等）からの呼び出しを想定
+
 #### ArXiv論文全文翻訳
 ```bash
 # 論文PDFをダウンロード→Markdown変換→日本語翻訳→Notion保存（フルパイプライン）

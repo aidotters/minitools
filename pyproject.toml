@@ -56,6 +56,8 @@ medium-translate = "scripts.medium_translate:main"
 arxiv-translate = "scripts.arxiv_translate:main"
 x-trend = "scripts.x_trend:main"
 x-followings = "scripts.x_followings:main"
+scrape-medium = "scripts.scrape_medium:main"
+discover-notion-medium = "scripts.discover_notion_medium:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
