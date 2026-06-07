@@ -405,6 +405,23 @@ flowchart LR
     I --> J["ファイル保存"]
 ```
 
+### YouTube Mail Digest 処理フロー（プロファイル駆動）
+
+```mermaid
+flowchart LR
+    A["Gmail (from:送信元)"] --> B["YouTubeEmailCollector<br/>URL抽出・正規化・dedup"]
+    B --> C["ProcessedStore<br/>per-profile 重複除外"]
+    C --> D["YouTubeCollector.get_transcript<br/>字幕優先→Whisperフォールバック"]
+    D --> E["YouTubeSummarizer<br/>要約文+ポイント"]
+    E --> F{"出力トグル<br/>slack/notion"}
+    F -->|slack有効| G["SlackPublisher<br/>format_youtube_digest"]
+    F -->|notion有効| H["NotionPublisher<br/>create_child_page"]
+    G --> K["gather後にmark_many+save"]
+    H --> K
+```
+
+settings.yaml の `youtube_mail_digest.profiles`（送信元→保存先のマップ）を順に処理し、`--profile` で絞り込み、`--no-slack`/`--no-notion` で出力先を実行時上書きする。重複は `(プロファイル, video_id)` で記録し、並列処理（`asyncio.gather`）の完了後に一括永続化して書き込み競合を避ける。
+
 ### X トレンド処理フロー（3ソース統合）
 
 ```mermaid

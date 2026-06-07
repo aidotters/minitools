@@ -220,6 +220,64 @@ class NotionPublisher:
             logger.error(f"Notionページ作成エラー: {e}")
             return None
 
+    async def create_child_page(
+        self,
+        parent_page_id: str,
+        title: str,
+        blocks: List[Dict[str, Any]],
+    ) -> Optional[str]:
+        """
+        指定した親ページの配下に子ページを作成し、本文ブロックを書き込む。
+
+        注意: parent={"page_id": ...} の子ページでは properties に title 以外を
+        設定できない（DB 用プロパティを渡すと 400）。URL・チャンネル・要約等の
+        メタ情報は全て blocks（本文）として渡すこと。
+
+        Args:
+            parent_page_id: 親ページの Notion ページ ID
+            title: 子ページのタイトル
+            blocks: 本文の Notion ブロックリスト
+
+        Returns:
+            作成された子ページの ID。失敗時は None。
+        """
+        try:
+            # 作成時に渡せる children は最大 100 ブロック
+            initial_blocks = blocks[:100] if blocks else []
+            page = cast(
+                Dict[str, Any],
+                await self._retry_api_call(
+                    lambda: self.client.pages.create(
+                        parent={"page_id": parent_page_id},
+                        properties={
+                            "title": {
+                                "title": [
+                                    {"type": "text", "text": {"content": title[:2000]}}
+                                ]
+                            }
+                        },
+                        children=initial_blocks,
+                    ),
+                    description="create_child_page",
+                ),
+            )
+
+            page_id = page.get("id")
+            if not page_id:
+                logger.error("子ページ作成に失敗（page_id なし）")
+                return None
+
+            # 100 ブロックを超える分は追記
+            if blocks and len(blocks) > 100:
+                await self.append_blocks(page_id, blocks[100:])
+
+            logger.debug(f"Notion子ページ作成完了: {page_id}")
+            return page_id
+
+        except Exception as e:
+            logger.error(f"Notion子ページ作成エラー: {e}")
+            return None
+
     async def save_article(
         self, database_id: str, article_data: Dict[str, Any]
     ) -> bool:

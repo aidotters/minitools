@@ -58,6 +58,7 @@ x-trend = "scripts.x_trend:main"
 x-followings = "scripts.x_followings:main"
 scrape-medium = "scripts.scrape_medium:main"
 discover-notion-medium = "scripts.discover_notion_medium:main"
+youtube-mail-digest = "scripts.youtube_mail_digest:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
