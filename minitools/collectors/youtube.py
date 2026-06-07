@@ -3,8 +3,10 @@ YouTube video collector and transcriber module.
 """
 
 import os
+import re
+import glob
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 import yt_dlp
 
@@ -18,6 +20,53 @@ except ImportError:
 from minitools.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# 字幕言語の優先順（日本語 → 英語）
+SUBTITLE_LANG_PRIORITY = ["ja", "ja-JP", "en", "en-US", "en-GB"]
+
+
+def parse_subtitle_to_text(content: str) -> str:
+    """
+    VTT / SRT 字幕テキストからプレーンテキストを抽出する。
+
+    タイムスタンプ行・連番・WEBVTT ヘッダー・インラインタグ（<...>）を除去し、
+    連続する重複行を畳んで連結する。
+
+    Args:
+        content: 字幕ファイルの中身（VTT または SRT）
+
+    Returns:
+        本文テキスト（空白区切り）
+    """
+    if not content:
+        return ""
+
+    lines: List[str] = []
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.upper().startswith("WEBVTT"):
+            continue
+        if line.startswith(("NOTE", "STYLE", "Kind:", "Language:")):
+            continue
+        # SRT の連番行
+        if line.isdigit():
+            continue
+        # タイムスタンプ行（00:00:00.000 --> 00:00:02.000）
+        if "-->" in line:
+            continue
+        # インラインタグ・話者タグを除去
+        line = re.sub(r"<[^>]+>", "", line)
+        line = line.strip()
+        if not line:
+            continue
+        # 直前と同一の行（自動字幕でよく重複する）はスキップ
+        if lines and lines[-1] == line:
+            continue
+        lines.append(line)
+
+    return " ".join(lines).strip()
 
 
 class YouTubeCollector:
@@ -195,3 +244,109 @@ class YouTubeCollector:
             except Exception as e:
                 logger.error(f"Error getting video info for {url}: {e}")
                 return None
+
+    def fetch_subtitles(self, url: str) -> Optional[str]:
+        """
+        yt-dlp で字幕（手動 → 自動）を取得しプレーンテキストで返す。
+
+        取得できない場合（字幕なし／throttle／block）は None を返し、
+        呼び出し側で Whisper フォールバックに回す。
+
+        Args:
+            url: YouTube動画のURL
+
+        Returns:
+            字幕テキスト。取得不可なら None。
+        """
+        subtitle_opts = {
+            "skip_download": True,
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": ["ja", "en"],
+            "subtitlesformat": "vtt",
+            "outtmpl": str(self.output_dir / "%(id)s.%(ext)s"),
+            "quiet": True,
+            "no_warnings": True,
+        }
+        if "ffmpeg_location" in self.ydl_opts:
+            subtitle_opts["ffmpeg_location"] = self.ydl_opts["ffmpeg_location"]
+
+        written: List[str] = []
+        try:
+            with yt_dlp.YoutubeDL(subtitle_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                video_id = info.get("id")
+                if not video_id:
+                    return None
+                # 字幕ファイルをダウンロード（手動・自動の両方を試す）
+                ydl.params["skip_download"] = True
+                ydl.download([url])
+        except Exception as e:
+            logger.warning(f"字幕取得に失敗（Whisperへフォールバック）: {url}: {e}")
+            return None
+
+        # 優先言語順に生成された字幕ファイルを探す
+        for lang in SUBTITLE_LANG_PRIORITY:
+            pattern = str(self.output_dir / f"{video_id}.{lang}.vtt")
+            matches = glob.glob(pattern)
+            if matches:
+                written.extend(matches)
+                break
+        if not written:
+            # 言語サフィックス不一致に備えた保険（任意の {id}.*.vtt）
+            written = glob.glob(str(self.output_dir / f"{video_id}.*.vtt"))
+
+        if not written:
+            logger.info(f"字幕が見つかりません: {url}")
+            return None
+
+        subtitle_file = written[0]
+        try:
+            content = Path(subtitle_file).read_text(encoding="utf-8", errors="ignore")
+        except OSError as e:
+            logger.warning(f"字幕ファイル読み込み失敗: {subtitle_file}: {e}")
+            return None
+        finally:
+            # 生成された字幕ファイルを掃除
+            for f in glob.glob(str(self.output_dir / f"{video_id}.*.vtt")):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+
+        text = parse_subtitle_to_text(content)
+        if not text:
+            return None
+        logger.info(f"字幕取得成功: {url} ({len(text)} chars)")
+        return text
+
+    def get_transcript(self, url: str) -> Optional[Dict[str, Any]]:
+        """
+        文字起こしを取得する。字幕を優先し、無ければ Whisper にフォールバック。
+
+        Args:
+            url: YouTube動画のURL
+
+        Returns:
+            {url, title, author, duration, transcript, source} の辞書。
+            source は "subtitle" または "whisper"。失敗時は None。
+        """
+        subtitle_text = self.fetch_subtitles(url)
+        if subtitle_text:
+            video_info = self.get_video_info(url) or {}
+            return {
+                "url": url,
+                "title": video_info.get("title", "Unknown"),
+                "author": video_info.get("uploader", "Unknown"),
+                "duration": video_info.get("duration", 0),
+                "transcript": subtitle_text,
+                "source": "subtitle",
+            }
+
+        # フォールバック: 音声DL + Whisper
+        logger.info(f"字幕なし。Whisper にフォールバック: {url}")
+        result = self.process_video(url)
+        if result:
+            result["source"] = "whisper"
+            return result
+        return None

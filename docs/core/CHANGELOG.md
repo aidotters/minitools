@@ -5,6 +5,19 @@
 ## [Unreleased]
 
 ### Added
+- **`youtube-mail-digest` コマンド追加（特定メール内 YouTube 動画の要約配信）** (2026-06-07)
+  - 特定送信元のメールに含まれる YouTube 動画を抽出し、字幕優先（無ければ Whisper フォールバック）で日本語の要約文＋ポイント箇条書きを生成、Slack 配信＋Notion 子ページ保存を行う新パイプライン
+  - settings.yaml の `youtube_mail_digest.profiles` に「送信元 → 保存先」を複数定義（`from` / `notion_parent_page_id` / `slack_webhook_env` / `slack` / `notion`）。`--profile` で絞り込み、`--no-slack`/`--no-notion` で出力先を実行時上書き（Slackのみ／Notionのみ運用が可能）
+  - 新規 `YouTubeEmailCollector`（Gmail を `from:` でパラメータ化取得、本文から YouTube URL を抽出・正規化・dedup。`GoogleAlertsCollector` パターンと token.pickle を共有）
+  - `YouTubeCollector` に `fetch_subtitles()` / `get_transcript()` を追加（yt-dlp 字幕 ja→en 優先、`parse_subtitle_to_text` で VTT→テキスト、字幕失敗/なしは Whisper にフォールバックし `source` を返す）
+  - 新規 `YouTubeSummarizer`（`get_llm_client` で provider 切替、デフォルト Gemini。要約文＋ポイントを1コール生成・パース・リトライ）
+  - `NotionPublisher.create_child_page()`（`parent={"page_id": ...}`、title 以外の properties 不可のためメタは本文ブロック）、`SlackPublisher.format_youtube_digest()`（セクション分割）を追加
+  - 新規 `ProcessedStore`（`outputs/youtube_mail_digest/processed.json`、**per-profile** dedup。並列処理後に `mark_many` + `save` で一括永続化し書き込み競合を回避）
+  - 各動画/プロファイル単位の try-except でエラー分離。`--test`（1動画）/ `--dry-run`（送信なし）対応
+  - `pyproject.toml` に `youtube-mail-digest` エントリ、`settings.yaml` に `youtube_mail_digest`（profiles）+ `defaults.youtube_mail_digest`、`.env.docker.example` に `SLACK_YOUTUBE_MAIL_DIGEST_WEBHOOK_URL`、`scripts/launchd/com.tak.minitools.youtube-mail-digest.plist` を追加
+  - **運用注意:** 初回は対話的に実行し Gmail OAuth（`token.pickle`）を生成してから launchd 登録すること（headless で `run_local_server` が永久ハングするため）
+  - テスト: `tests/test_youtube_email.py` を新規追加（URL抽出/正規化/dedup・ProcessedStore・字幕フォールバック・要約パース・出力トグル・オーケストレータ統合の45件）
+
 - **`scrape-medium` / `discover-notion-medium` コマンド追加（llm-wiki 連携用）** (2026-06-06)
   - `scrape-medium`: Medium 記事 URL を受け取り、英語原文 Markdown を stdout に出力する CLI を追加（翻訳・要約・Notion 保存は行わない）。既存 `MediumScraper` + `MarkdownConverter` を再利用
     - `--cdp` フラグでログイン済み Chrome に CDP 接続（Cloudflare 回避、推奨）。未指定時はスタンドアロン Playwright

@@ -100,6 +100,69 @@ class SlackPublisher:
                 await asyncio.sleep(0.5)
         return True
 
+    def format_youtube_digest(
+        self,
+        videos: list[dict[str, Any]],
+        title: str = "YouTube ダイジェスト",
+        date: str | None = None,
+        max_message_length: int = 3500,
+    ) -> list[str]:
+        """
+        YouTube 動画の要約リストを Slack メッセージ（セクション分割）に整形する。
+
+        各動画 dict のキー: title, author, url, summary（要約文）, points（list[str]）。
+
+        Args:
+            videos: 動画要約データのリスト
+            title: 見出しタイトル
+            date: 日付文字列（省略時は当日）
+            max_message_length: 1メッセージの最大文字数（超過時に分割）
+
+        Returns:
+            送信用メッセージのリスト（send_messages に渡せる）
+        """
+        date_str = date or datetime.now().strftime("%Y-%m-%d")
+        header = f"*{title} {date_str} ({len(videos)}件)*"
+
+        if not videos:
+            return [f"{header}\n対象となる動画がありませんでした。"]
+
+        # 動画ごとのブロックを生成
+        video_blocks: list[str] = []
+        for i, video in enumerate(videos, 1):
+            v_title = video.get("title", "タイトルなし")
+            author = video.get("author", "")
+            url = video.get("url", "")
+            summary = video.get("summary", "")
+            points = video.get("points", []) or []
+
+            lines = [f"*{i}. {v_title}*"]
+            if author:
+                lines.append(f"📺 {author}")
+            if url:
+                lines.append(url)
+            if summary:
+                lines.append(f"\n{summary}")
+            if points:
+                lines.append("")
+                lines.extend(f"• {p}" for p in points)
+            video_blocks.append("\n".join(lines))
+
+        # ヘッダー + 各ブロックを max_message_length 以内で詰めて分割
+        messages: list[str] = []
+        current = header
+        for block in video_blocks:
+            candidate = f"{current}\n\n{block}" if current else block
+            if len(candidate) > max_message_length and current:
+                messages.append(current)
+                current = block
+            else:
+                current = candidate
+        if current:
+            messages.append(current)
+
+        return messages
+
     def format_articles_message(
         self,
         articles: list[dict[str, Any]],

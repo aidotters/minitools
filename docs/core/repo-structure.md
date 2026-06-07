@@ -13,7 +13,8 @@ minitools/
 │   │   ├── arxiv.py               # ArXiv論文検索
 │   │   ├── medium.py              # Medium Daily Digest収集
 │   │   ├── google_alerts.py       # Google Alerts収集
-│   │   ├── youtube.py             # YouTube文字起こし
+│   │   ├── youtube.py             # YouTube文字起こし（字幕優先→Whisper）
+│   │   ├── youtube_email.py       # 特定送信元メールからYouTube URL抽出
 │   │   └── x_trend.py             # X トレンド収集（TwitterAPI.io）
 │   ├── llm/                        # LLM抽象化レイヤー
 │   │   ├── __init__.py            # get_llm_client()ファクトリ
@@ -46,6 +47,7 @@ minitools/
 │   │   ├── weekly_digest.py       # 週次ダイジェスト生成
 │   │   ├── arxiv_weekly.py        # ArXiv週次ダイジェスト生成
 │   │   ├── x_trend.py             # X トレンド処理（LLMフィルタ・要約）
+│   │   ├── youtube_summary.py     # YouTube要約文+ポイント生成（get_llm_client）
 │   │   └── duplicate_detector.py  # 類似記事検出
 │   ├── publishers/                 # 出力レイヤー
 │   │   ├── __init__.py
@@ -55,6 +57,7 @@ minitools/
 │   └── utils/                      # ユーティリティ
 │       ├── __init__.py
 │       ├── config.py              # 設定管理（シングルトン）
+│       ├── processed_store.py     # 処理済み動画のper-profile記録（youtube-mail-digest）
 │       └── logger.py              # カラーログ出力
 │
 ├── scripts/                        # CLIエントリーポイント
@@ -65,6 +68,7 @@ minitools/
 │   ├── google_alerts.py           # google-alerts コマンド
 │   ├── google_alerts_translate.py # google-alerts-translate コマンド（Jina→翻訳→Notion）
 │   ├── youtube.py                 # youtube コマンド
+│   ├── youtube_mail_digest.py     # youtube-mail-digest コマンド（メール→要約→Slack/Notion）
 │   ├── google_alert_weekly_digest.py  # google-alert-weekly-digest コマンド
 │   ├── google_alert_daily_digest.py   # google-alert-daily-digest コマンド
 │   ├── arxiv_weekly.py            # arxiv-weekly コマンド
@@ -73,7 +77,8 @@ minitools/
 │   ├── scrape_medium.py           # scrape-medium コマンド（Medium英語原文Markdown出力）
 │   ├── discover_notion_medium.py  # discover-notion-medium コマンド（Notion Medium DB→JSON）
 │   └── launchd/                   # macOS launchd plist（定期実行設定）
-│       └── com.tak.minitools.google-alert-daily-digest.plist
+│       ├── com.tak.minitools.google-alert-daily-digest.plist
+│       └── com.tak.minitools.youtube-mail-digest.plist
 │
 ├── docs/                           # ドキュメント
 │   ├── core/                      # コアドキュメント
@@ -141,7 +146,8 @@ minitools/
 | `arxiv.py` | ArXiv APIから論文を検索・取得 | ArXiv API, feedparser |
 | `medium.py` | Gmail経由でMedium Daily Digestを取得 | Gmail API, Jina AI Reader |
 | `google_alerts.py` | Gmail経由でGoogle Alertsを取得 | Gmail API |
-| `youtube.py` | YouTube動画の音声ダウンロード・文字起こし | yt-dlp, MLX Whisper |
+| `youtube.py` | YouTube動画の字幕取得（優先）・音声ダウンロード・文字起こし（Whisperフォールバック） | yt-dlp, MLX Whisper |
+| `youtube_email.py` | 特定送信元のGmailからYouTube動画URLを抽出・正規化・dedup | Gmail API |
 | `x_trend.py` | TwitterAPI.ioからトレンド・キーワード検索・ユーザータイムラインを収集 | TwitterAPI.io |
 
 #### llm/ (LLM抽象化レイヤー)
@@ -200,6 +206,7 @@ LLMを使用してコンテンツを処理するモジュール群。
 | `weekly_digest.py` | 週次ダイジェスト生成 | LLM抽象化レイヤー経由 |
 | `arxiv_weekly.py` | ArXiv週次ダイジェスト生成 | LLM抽象化レイヤー経由 |
 | `x_trend.py` | X トレンド処理・AI関連フィルタ・Tweet要約 | LLM抽象化レイヤー経由 |
+| `youtube_summary.py` | YouTube文字起こしから要約文+ポイント生成 | LLM抽象化レイヤー経由（デフォルトGemini） |
 | `duplicate_detector.py` | 類似記事検出・重複除去 | Embedding抽象化レイヤー経由 |
 
 #### publishers/ (出力)
@@ -219,6 +226,7 @@ LLMを使用してコンテンツを処理するモジュール群。
 | モジュール | 役割 | パターン |
 |-----------|------|---------|
 | `config.py` | 設定ファイル管理 | シングルトン |
+| `processed_store.py` | 処理済み動画のper-profile記録（youtube-mail-digest） | JSON永続化 |
 | `logger.py` | カラー対応ログ出力 | ColoredFormatter |
 
 ### scripts/ (CLIエントリーポイント)
@@ -234,6 +242,7 @@ LLMを使用してコンテンツを処理するモジュール群。
 | `google_alerts.py` | `google-alerts` | Google Alertsの収集・翻訳・保存 |
 | `google_alerts_translate.py` | `google-alerts-translate` | Google Alerts記事の全文翻訳・Notion追記 |
 | `youtube.py` | `youtube` | YouTube動画の文字起こし・要約 |
+| `youtube_mail_digest.py` | `youtube-mail-digest` | 特定メール内のYouTube動画を要約しSlack配信+Notion子ページ保存（プロファイル駆動・字幕優先） |
 | `google_alert_weekly_digest.py` | `google-alert-weekly-digest` | Google Alerts週次ダイジェストの生成・Slack通知 |
 | `google_alert_daily_digest.py` | `google-alert-daily-digest` | Google Alerts日次ダイジェスト（過去24時間 Top10 + 「今日のまとめ」）の生成・Slack通知 |
 | `arxiv_weekly.py` | `arxiv-weekly` | ArXiv週次ダイジェストの生成・Slack通知 |

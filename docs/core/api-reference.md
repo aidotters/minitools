@@ -352,6 +352,33 @@ print(result['transcript'])
 
 ---
 
+### YouTubeEmailCollector
+
+特定送信元(from)の Gmail を取得し、本文 HTML から YouTube 動画 URL を抽出・正規化・重複除去するコレクター（`youtube-mail-digest` 用）。Gmail 認証・本文抽出は `GoogleAlertsCollector` のパターンを流用し、`token.pickle` を共有する。
+
+**初期化:**
+```python
+YouTubeEmailCollector(sender: str, credentials_path: Optional[str] = None)
+```
+
+**主要メソッド:**
+
+| メソッド | シグネチャ | 説明 |
+|---------|-----------|------|
+| `collect` | `collect(hours_back=24, date=None) -> list[VideoRef]` | 送信元メールを期間指定で取得し動画参照リストを返す（メール横断で video_id dedup） |
+
+**モジュール関数（純粋・単体テスト済み）:**
+
+| 関数 | 説明 |
+|------|------|
+| `extract_video_id(url)` | YouTube URL から11桁の動画 ID を抽出（watch/youtu.be/shorts/embed/live、非該当は None） |
+| `normalize_youtube_url(url)` | `https://www.youtube.com/watch?v=ID` 形式へ正規化（トラッキング除去） |
+| `extract_youtube_urls(html)` | HTML 本文から全 YouTube URL を抽出・正規化・dedup（出現順保持） |
+
+**VideoRef（dataclass）:** `url`, `video_id`, `email_date`, `source_subject`
+
+---
+
 ### XTrendCollector
 
 TwitterAPI.ioからX（Twitter）トレンド・キーワード検索・ユーザータイムラインを収集するクラス。日本/グローバルWOEIDのサポート、非同期HTTP通信、指数バックオフリトライ機能。
@@ -1715,6 +1742,26 @@ print(f"detected={result.detected}, applied={result.applied}")
 
 ---
 
+### YouTubeSummarizer
+
+YouTube 文字起こしから日本語の要約文＋ポイント箇条書き（3〜7個）を生成する processor（`youtube-mail-digest` 用）。`get_llm_client` 経由で provider 切替（デフォルト Gemini、`defaults.youtube_mail_digest`）。
+
+**初期化:**
+```python
+YouTubeSummarizer(provider=None, model=None, thinking_level=None,
+                  llm_client=None, max_retries=3, max_input_chars=24000)
+```
+
+**主要メソッド:**
+
+| メソッド | シグネチャ | 説明 |
+|---------|-----------|------|
+| `summarize` | `async summarize(transcript: str, title: str = "") -> Summary` | 要約文＋ポイントを1コール生成・パース・指数バックオフリトライ。空入力時は空 Summary |
+
+**Summary（dataclass）:** `text: str`, `points: list[str]`
+
+---
+
 ### DuplicateDetector
 
 類似記事を検出してグループ化するクラス。
@@ -2861,6 +2908,26 @@ logger.info("処理開始")
 logger.warning("警告メッセージ")
 logger.error("エラー発生")
 ```
+
+---
+
+### ProcessedStore
+
+`youtube-mail-digest` の処理済み動画を **per-profile**（`{プロファイル: [video_id, ...]}`）で JSON 記録し、再処理・再配信を防ぐ。デフォルトパス `outputs/youtube_mail_digest/processed.json`。
+
+**初期化:**
+```python
+ProcessedStore(path: str = "outputs/youtube_mail_digest/processed.json")
+```
+
+**主要メソッド:**
+
+| メソッド | シグネチャ | 説明 |
+|---------|-----------|------|
+| `filter_new` | `filter_new(profile, refs) -> list` | 未処理の参照（`.video_id` を持つ）のみ返す |
+| `is_processed` | `is_processed(profile, video_id) -> bool` | 処理済みか判定 |
+| `mark` / `mark_many` | `mark(profile, video_id)` / `mark_many(profile, ids)` | 処理済みをメモリに記録 |
+| `save` | `save()` | JSON へ永続化（並列処理の完了後に一括呼び出しし書き込み競合を回避） |
 
 ---
 

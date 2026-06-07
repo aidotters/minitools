@@ -112,6 +112,19 @@ uv run google-alerts-translate --url "https://..." --dry-run            # Previe
 # YouTube video summarization (requires whisper extra)
 uv run youtube --url "https://youtube.com/watch?v=..."
 
+# YouTube Mail Digest（特定送信元メール内のYouTube動画を要約しSlack配信+Notion保存）
+# settings.yaml の youtube_mail_digest.profiles に「送信元→保存先」を複数定義して実行
+# 字幕優先（無ければWhisperフォールバック）。重複は per-profile で processed.json に記録しスキップ
+uv run youtube-mail-digest                          # 全プロファイルを直近24時間分処理
+uv run youtube-mail-digest --hours 24               # 取得期間を指定
+uv run youtube-mail-digest --date 2026-06-07        # 特定日のメールを処理
+uv run youtube-mail-digest --profile ai-newsletter  # 特定プロファイルのみ
+uv run youtube-mail-digest --profile x --no-notion  # Slackのみ（Notion保存なし）
+uv run youtube-mail-digest --profile x --no-slack   # Notionのみ（Slack配信なし）
+uv run youtube-mail-digest --test                   # 各プロファイル先頭1動画のみ
+uv run youtube-mail-digest --dry-run                # Slack/Notion送信なしのプレビュー
+uv run youtube-mail-digest --provider openai        # 要約LLMプロバイダを指定
+
 # Google Alert Weekly Digest (summarizes top articles from Notion)
 # Default provider: openai (for fast batch scoring)
 uv run google-alert-weekly-digest --days 7 --top 20
@@ -161,7 +174,12 @@ This is a content aggregation and processing system that collects articles from 
   - Uses email preview text by default (faster, avoids Cloudflare blocking)
   - Optionally uses Jina AI Reader (`r.jina.ai`) with `--use-jina` flag
 - **GoogleAlertsCollector**: Processes Google Alerts emails via Gmail API
-- **YouTubeCollector**: Downloads and transcribes YouTube videos using MLX Whisper
+- **YouTubeCollector**: Downloads and transcribes YouTube videos
+  - `fetch_subtitles()`: yt-dlp で字幕（手動→自動、ja→en 優先）を取得し VTT をプレーンテキスト化（`parse_subtitle_to_text`）。取得失敗・字幕なしは None
+  - `get_transcript()`: 字幕優先→無ければ既存 `process_video`（音声DL + MLX Whisper）にフォールバック。`source` を `"subtitle"`/`"whisper"` で返す
+- **YouTubeEmailCollector**: 特定送信元(from)の Gmail を取得し本文 HTML から YouTube 動画 URL を抽出（`youtube-mail-digest` 用）
+  - Gmail 認証・本文抽出は `GoogleAlertsCollector` のパターンを流用し、`from:` をパラメータ化（token.pickle 共有、`gmail.readonly`）
+  - `extract_youtube_urls()` / `normalize_youtube_url()` / `extract_video_id()`: watch / youtu.be / shorts / embed を正規化し video_id で dedup（純粋関数、単体テスト済み）
 - **XTrendCollector**: Fetches trending topics, keyword search results, and user timelines from X (Twitter) via TwitterAPI.io
   - 3 sources: Trends (Japan/Global WOEID), keyword search, user timeline monitoring
   - `collect_all()`: Parallel collection of all 3 sources via `asyncio.gather`
@@ -240,6 +258,9 @@ This is a content aggregation and processing system that collects articles from 
   - Keywords: Tweet summarization per keyword
   - Timelines: LLM filtering for AI-related tweets → summarization per account
   - `process_all()`: Unified processing of all 3 sources
+- **YouTubeSummarizer**: 文字起こしから日本語の要約文＋ポイント箇条書き（3〜7個）を生成（`youtube-mail-digest` 用）
+  - `get_llm_client` 経由で provider 切替（デフォルト Gemini、`defaults.youtube_mail_digest.{provider,model,thinking_level}`）
+  - 1コールで要約＋ポイントを生成し `_parse_summary_response` でパース、指数バックオフリトライ（`Summary(text, points)` を返す）
 - **DuplicateDetector**: Detects similar articles using embeddings
 - All use async processing for parallel execution (3-5x performance improvement)
 
@@ -249,6 +270,7 @@ This is a content aggregation and processing system that collects articles from 
   - `find_page_by_url()`: Find existing page by URL, returns `PageInfo(page_id, is_translated)` to skip already-translated pages
   - `append_blocks()`: Append translated blocks to existing pages (100-block batch)
   - `update_page_properties()`: Update existing page properties (e.g., Translated checkbox)
+  - `create_child_page(parent_page_id, title, blocks)`: 親ページ配下に子ページを作成（`parent={"page_id": ...}`、`youtube-mail-digest` 用）。**注意:** 子ページは title 以外の properties を設定できない（DB プロパティを渡すと 400）。メタ情報は全て本文ブロックとして書く
   - Medium properties: Title, Japanese Title, URL, Author, Date, Summary, Claps (number), Translated (checkbox)
 - **NotionBlockBuilder**: Converts Markdown to Notion API block format (headings, code, images, lists, quotes)
 - **SlackPublisher**: Sends formatted notifications to Slack webhooks (including weekly/daily digest format)
@@ -258,6 +280,7 @@ This is a content aggregation and processing system that collects articles from 
     - `format_x_trend_digest_sections(ProcessResult)` → `list[str]`（セクションごとのメッセージリスト）
     - `format_x_trend_digest(ProcessResult)` → `str`（後方互換ラッパー、内部で sections を結合）
     - `send_messages(messages)`: 複数メッセージを順番に送信（0.5秒間隔でレート制限回避）
+  - YouTube Mail Digest: `format_youtube_digest(videos, title, date, max_message_length)` → `list[str]`（動画ごとにタイトル・チャンネル・URL・要約・ポイントを整形し、長文はセクション分割して `send_messages` で送信）
 
 ### Key Design Patterns
 
@@ -271,7 +294,7 @@ This is a content aggregation and processing system that collects articles from 
    - `settings.yaml`: Application settings (models, parameters)
 
 3. **Entry Points**: CLI commands via pyproject.toml
-   - `arxiv`, `medium`, `medium-translate`, `arxiv-translate`, `google-alerts`, `google-alerts-translate`, `youtube`, `google-alert-weekly-digest`, `google-alert-daily-digest`, `arxiv-weekly`, `x-trend`, `x-followings`, `scrape-medium`, `discover-notion-medium`
+   - `arxiv`, `medium`, `medium-translate`, `arxiv-translate`, `google-alerts`, `google-alerts-translate`, `youtube`, `youtube-mail-digest`, `google-alert-weekly-digest`, `google-alert-daily-digest`, `arxiv-weekly`, `x-trend`, `x-followings`, `scrape-medium`, `discover-notion-medium`
 
 4. **Error Handling**: Retry logic with exponential backoff for API calls
    - NotionPublisher: `_retry_api_call()` detects rate limit errors and retries with 2s/4s/8s backoff (max 3 retries)
