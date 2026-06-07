@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -e
+
+echo "=== Pre-commit hooks ==="
+
+echo "[1/4] ruff check --fix..."
+uv run ruff check . --fix
+
+echo "[2/4] ruff format..."
+uv run ruff format .
+
+# ruff による修正を、もともとステージ済みだったファイルに限定して再ステージする。
+# 以前は `git diff --name-only | xargs git add` としており、ステージしていない
+# 無関係な tracked 変更まで巻き込んでコミットしてしまう事故があったため、
+# コミット対象（--cached）の追加/変更ファイルに限定する。
+git diff --cached --name-only --diff-filter=ACM | xargs -r git add --
+
+echo "[3/4] mypy..."
+uv run mypy .
+
+echo "[4/4] pytest..."
+uv run pytest tests/
+
+echo "=== All checks passed ==="
