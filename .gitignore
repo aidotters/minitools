@@ -660,5 +660,11 @@ sandbox/
 temp/
 outputs/
 
+# macOS metadata
+.DS_Store
+
+# skill-creator eval 成果物（再生成可能・コミット不要）
+.claude/skills/feature-flow-workspace/
+
 docs/ideas/
 docs/refs/
