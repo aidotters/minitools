@@ -1023,6 +1023,17 @@ uv run ruff check minitools/
 uv run mypy minitools/
 ```
 
+### pre-commit hook の有効化
+
+本リポジトリは `.githooks/pre-commit` でコミット前に ruff（format / check --fix）・mypy・pytest を自動実行します。hook はリポジトリ管理下にありますが、有効化はクローンごとに各自で設定する必要があります（`core.hooksPath` はローカル設定のため）。
+
+```bash
+# クローン後に一度だけ実行（このリポジトリの .githooks を使うよう設定）
+git config core.hooksPath .githooks
+```
+
+設定後は `git commit` のたびに自動でチェックが走り、すべて通過しないとコミットできません。なお hook はコミット対象（ステージ済み）のファイルのみを再フォーマット・再ステージするため、ステージしていない無関係な変更がコミットに巻き込まれることはありません。
+
 ### テストの実行
 ```bash
 # テストの実行
