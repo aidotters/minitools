@@ -24,13 +24,50 @@
       Gmail OAuth ブラウザ認証を済ませて token.pickle を生成してから launchd 登録すること。
       未認証のまま launchd で起動すると run_local_server がブラウザを開けず永久ハングする。
     -->
+    <!-- 平日（月〜金）の 20:00 に実行。Weekday: 1=月 ... 5=金 -->
     <key>StartCalendarInterval</key>
-    <dict>
-        <key>Hour</key>
-        <integer>20</integer>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
+    <array>
+        <dict>
+            <key>Weekday</key>
+            <integer>1</integer>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>2</integer>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>3</integer>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>4</integer>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Weekday</key>
+            <integer>5</integer>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
     <key>StandardOutPath</key>
     <string>/Users/tak/Projects/minitools/logs/youtube-mail-digest.log</string>
     <key>StandardErrorPath</key>

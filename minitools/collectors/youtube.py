@@ -249,7 +249,12 @@ class YouTubeCollector:
         """
         yt-dlp で字幕（手動 → 自動）を取得しプレーンテキストで返す。
 
-        取得できない場合（字幕なし／throttle／block）は None を返し、
+        優先言語（SUBTITLE_LANG_PRIORITY）を1言語ずつ試し、取得できた時点で終了する。
+        日本語動画で ja を取得できれば en を取りにいかないため、不要な連続リクエスト
+        による 429（Too Many Requests）を避けられる。各言語の DL は独立して試行し、
+        ある言語が失敗（throttle/block）しても別言語で取得できることがある。
+
+        取得できない場合（字幕なし／全言語 throttle／block）は None を返し、
         呼び出し側で Whisper フォールバックに回す。
 
         Args:
@@ -258,67 +263,64 @@ class YouTubeCollector:
         Returns:
             字幕テキスト。取得不可なら None。
         """
-        subtitle_opts = {
+        base_opts: Dict[str, Any] = {
             "skip_download": True,
             "writesubtitles": True,
             "writeautomaticsub": True,
-            "subtitleslangs": ["ja", "en"],
             "subtitlesformat": "vtt",
             "outtmpl": str(self.output_dir / "%(id)s.%(ext)s"),
             "quiet": True,
             "no_warnings": True,
         }
         if "ffmpeg_location" in self.ydl_opts:
-            subtitle_opts["ffmpeg_location"] = self.ydl_opts["ffmpeg_location"]
+            base_opts["ffmpeg_location"] = self.ydl_opts["ffmpeg_location"]
 
-        written: List[str] = []
+        # video_id を一度だけ解決（生成される字幕ファイル名の特定に使う）
         try:
-            with yt_dlp.YoutubeDL(subtitle_opts) as ydl:
+            with yt_dlp.YoutubeDL({**base_opts, "subtitleslangs": []}) as ydl:
                 info = ydl.extract_info(url, download=False)
-                video_id = info.get("id")
-                if not video_id:
-                    return None
-                # 字幕ファイルをダウンロード（手動・自動の両方を試す）
-                ydl.params["skip_download"] = True
-                ydl.download([url])
         except Exception as e:
-            logger.warning(f"字幕取得に失敗（Whisperへフォールバック）: {url}: {e}")
+            logger.warning(f"字幕メタ取得に失敗（Whisperへフォールバック）: {url}: {e}")
+            return None
+        video_id = info.get("id") if info else None
+        if not video_id:
             return None
 
-        # 優先言語順に生成された字幕ファイルを探す
+        # 優先言語を1つずつ試行。取得できたら即終了（後続言語の DL で 429 を誘発しない）
         for lang in SUBTITLE_LANG_PRIORITY:
-            pattern = str(self.output_dir / f"{video_id}.{lang}.vtt")
-            matches = glob.glob(pattern)
+            try:
+                with yt_dlp.YoutubeDL({**base_opts, "subtitleslangs": [lang]}) as ydl:
+                    ydl.download([url])
+            except Exception as e:
+                # この言語の DL に失敗しても、次の優先言語で取得できることがある
+                logger.debug(f"字幕DL失敗 (lang={lang}): {url}: {e}")
+
+            # 生成された字幕ファイル（{id}.{lang}.vtt）を読む
+            matches = glob.glob(str(self.output_dir / f"{video_id}.{lang}.vtt"))
+            text = ""
             if matches:
-                written.extend(matches)
-                break
-        if not written:
-            # 言語サフィックス不一致に備えた保険（任意の {id}.*.vtt）
-            written = glob.glob(str(self.output_dir / f"{video_id}.*.vtt"))
+                subtitle_file = matches[0]
+                try:
+                    content = Path(subtitle_file).read_text(
+                        encoding="utf-8", errors="ignore"
+                    )
+                    text = parse_subtitle_to_text(content)
+                except OSError as e:
+                    logger.warning(f"字幕ファイル読み込み失敗: {subtitle_file}: {e}")
 
-        if not written:
-            logger.info(f"字幕が見つかりません: {url}")
-            return None
-
-        subtitle_file = written[0]
-        try:
-            content = Path(subtitle_file).read_text(encoding="utf-8", errors="ignore")
-        except OSError as e:
-            logger.warning(f"字幕ファイル読み込み失敗: {subtitle_file}: {e}")
-            return None
-        finally:
-            # 生成された字幕ファイルを掃除
-            for f in glob.glob(str(self.output_dir / f"{video_id}.*.vtt")):
+            # この言語の生成物を掃除（取得有無に関わらず）
+            for f in glob.glob(str(self.output_dir / f"{video_id}.{lang}.vtt")):
                 try:
                     os.remove(f)
                 except OSError:
                     pass
 
-        text = parse_subtitle_to_text(content)
-        if not text:
-            return None
-        logger.info(f"字幕取得成功: {url} ({len(text)} chars)")
-        return text
+            if text:
+                logger.info(f"字幕取得成功: {url} (lang={lang}, {len(text)} chars)")
+                return text
+
+        logger.info(f"字幕が見つかりません: {url}")
+        return None
 
     def get_transcript(self, url: str) -> Optional[Dict[str, Any]]:
         """
