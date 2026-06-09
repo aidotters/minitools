@@ -48,7 +48,7 @@ def parse_subtitle_to_text(content: str) -> str:
             continue
         if line.upper().startswith("WEBVTT"):
             continue
-        if line.startswith(("NOTE", "STYLE", "Kind:", "Language:")):
+        if line.startswith(("NOTE", "STYLE", "Kind:", "Language:", "X-TIMESTAMP-MAP")):
             continue
         # SRT の連番行
         if line.isdigit():
@@ -240,6 +240,8 @@ class YouTubeCollector:
                     "upload_date": info.get("upload_date"),
                     "view_count": info.get("view_count"),
                     "like_count": info.get("like_count"),
+                    "live_status": info.get("live_status"),
+                    "is_live": info.get("is_live"),
                 }
             except Exception as e:
                 logger.error(f"Error getting video info for {url}: {e}")
@@ -326,16 +328,29 @@ class YouTubeCollector:
         """
         文字起こしを取得する。字幕を優先し、無ければ Whisper にフォールバック。
 
+        ライブ配信中／配信予定（live_status が is_live / is_upcoming）の動画は
+        字幕・音声ともにライブエッジ付近の断片しか取得できず、内容を反映しない
+        要約になるためスキップして None を返す。呼び出し側は processed として
+        記録しないため、配信終了後に VOD 化したら次回実行で取得し直せる。
+
         Args:
             url: YouTube動画のURL
 
         Returns:
             {url, title, author, duration, transcript, source} の辞書。
-            source は "subtitle" または "whisper"。失敗時は None。
+            source は "subtitle" または "whisper"。失敗・ライブ中は None。
         """
+        video_info = self.get_video_info(url) or {}
+        live_status = video_info.get("live_status")
+        if live_status in ("is_live", "is_upcoming") or video_info.get("is_live"):
+            logger.warning(
+                f"ライブ配信中/配信予定のためスキップ（VOD化後に再取得）: "
+                f"{url} (live_status={live_status})"
+            )
+            return None
+
         subtitle_text = self.fetch_subtitles(url)
         if subtitle_text:
-            video_info = self.get_video_info(url) or {}
             return {
                 "url": url,
                 "title": video_info.get("title", "Unknown"),

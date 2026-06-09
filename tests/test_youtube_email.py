@@ -9,6 +9,7 @@ import scripts.youtube_mail_digest as ymd
 from minitools.collectors.youtube import YouTubeCollector, parse_subtitle_to_text
 from minitools.collectors.youtube_email import (
     VideoRef,
+    _decode_redirect_urls,
     extract_video_id,
     extract_youtube_urls,
     normalize_youtube_url,
@@ -113,6 +114,60 @@ class TestExtractYoutubeUrls:
     def test_empty_html(self):
         assert extract_youtube_urls("") == []
 
+    def test_wordpress_redirect_encoded_url(self):
+        """WordPress digest メールの encoded_url(base64) 内の動画 URL を抽出。
+
+        実メール（jun_ishihara_daily_bubble プロファイル）から採取した形に合わせ、
+        区切りは &#038; でエスケープしたまま渡す。BeautifulSoup の unescape を
+        経て parse_qs が encoded_url を取り出せることまで検証する。
+        - 動画リンク: https://youtu.be/kofZHqWvNWI?si=skJBui65-sevbYYZ
+        - チャンネルリンク: https://www.youtube.com/@ishihara-jun#...（video_id 無し）
+        """
+        # base64("https://youtu.be/kofZHqWvNWI?si=skJBui65-sevbYYZ")
+        video_b64 = "aHR0cHM6Ly95b3V0dS5iZS9rb2ZaSHFXdk5XST9zaT1za0pCdWk2NS1zZXZiWVla"
+        # base64("https://www.youtube.com/@ishihara-jun#:~:text=...")
+        channel_b64 = (
+            "aHR0cHM6Ly93d3cueW91dHViZS5jb20vQGlzaGloYXJhLWp1biM6fjp0ZXh0PSVFNiVB"
+            "RiU4RSVFOSU4MCVCMSVFNyU4MSVBQiVFNiU5QiU5QyVFNiU5NyVBNSVFMyU4MSVBRSVF"
+            "NSVBNCU5QyVFMyU4MSVBQiVFOSU4NSU4RCVFNCVCRiVBMQ=="
+        )
+        html = f"""
+        <html><body>
+          <a href="http://ishiharajun.wpcomstaging.com?action=user_content_redirect&#038;uuid=abc&#038;encoded_url={video_b64}&#038;email_id=xyz">再生</a>
+          <a href="http://ishiharajun.wpcomstaging.com?action=user_content_redirect&#038;uuid=def&#038;encoded_url={channel_b64}&#038;email_id=xyz">石原順チャンネル</a>
+          <div style="background-image: url(&quot;https://img.youtube.com/vi/kofZHqWvNWI/0.jpg&quot;);"></div>
+        </body></html>
+        """
+        urls = extract_youtube_urls(html)
+        assert "https://www.youtube.com/watch?v=kofZHqWvNWI" in urls
+        # チャンネル URL は video_id を持たないため抽出されない
+        assert all("ishihara-jun" not in u for u in urls)
+
+
+class TestDecodeRedirectUrls:
+    """WordPress encoded_url のデコード"""
+
+    def test_standard_base64_with_padding(self):
+        # base64("https://youtu.be/dQw4w9WgXcQ") = ...=  (padding あり)
+        encoded = "aHR0cHM6Ly95b3V0dS5iZS9kUXc0dzlXZ1hjUQ=="
+        url = f"https://example.com/r?encoded_url={encoded}"
+        assert _decode_redirect_urls(url) == ["https://youtu.be/dQw4w9WgXcQ"]
+
+    def test_no_padding(self):
+        # padding を取り除いても補正してデコードできる
+        encoded = "aHR0cHM6Ly95b3V0dS5iZS9rb2ZaSHFXdk5XST9zaT1za0pCdWk2NS1zZXZiWVla"
+        url = f"https://example.com/r?encoded_url={encoded}"
+        assert _decode_redirect_urls(url) == [
+            "https://youtu.be/kofZHqWvNWI?si=skJBui65-sevbYYZ"
+        ]
+
+    def test_no_encoded_url_param(self):
+        assert _decode_redirect_urls("https://example.com/foo?bar=1") == []
+
+    def test_invalid_base64_skipped(self):
+        # デコード不能でも例外を出さず空リスト
+        assert _decode_redirect_urls("https://example.com/r?encoded_url=@@@") == []
+
 
 class TestProcessedStore:
     """processed.json による per-profile 重複管理"""
@@ -176,6 +231,16 @@ class TestParseSubtitleToText:
             "same line\n"
         )
         assert parse_subtitle_to_text(vtt) == "same line"
+
+    def test_strips_hls_timestamp_map_header(self):
+        """ライブ配信由来の VTT の X-TIMESTAMP-MAP ヘッダ行を除去"""
+        vtt = (
+            "WEBVTT\n"
+            "X-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:380699999\n\n"
+            "00:00:00.000 --> 00:00:02.000\n"
+            "本編の内容\n"
+        )
+        assert parse_subtitle_to_text(vtt) == "本編の内容"
 
     def test_empty(self):
         assert parse_subtitle_to_text("") == ""
@@ -245,6 +310,9 @@ class TestTranscriptFallback:
 
         monkeypatch.setattr(collector, "fetch_subtitles", lambda url: None)
         monkeypatch.setattr(
+            collector, "get_video_info", lambda url: {"live_status": "not_live"}
+        )
+        monkeypatch.setattr(
             collector,
             "process_video",
             lambda url: {
@@ -260,6 +328,35 @@ class TestTranscriptFallback:
         assert result is not None
         assert result["source"] == "whisper"
         assert result["transcript"] == "whisper text"
+
+    @pytest.mark.parametrize("live_status", ["is_live", "is_upcoming"])
+    def test_live_video_skipped(self, tmp_path, monkeypatch, live_status):
+        """ライブ配信中/配信予定は字幕・Whisper を起動せず None（再取得のため未記録）"""
+        collector = YouTubeCollector(output_dir=str(tmp_path))
+
+        monkeypatch.setattr(
+            collector,
+            "get_video_info",
+            lambda url: {"title": "T", "uploader": "U", "live_status": live_status},
+        )
+
+        called = {"fetch": False, "process": False}
+
+        def _fetch(url):
+            called["fetch"] = True
+            return "字幕"
+
+        def _process(url):
+            called["process"] = True
+            return {"transcript": "whisper"}
+
+        monkeypatch.setattr(collector, "fetch_subtitles", _fetch)
+        monkeypatch.setattr(collector, "process_video", _process)
+
+        result = collector.get_transcript("https://youtu.be/ccccccccccc")
+        assert result is None
+        assert called["fetch"] is False
+        assert called["process"] is False
 
 
 class TestYouTubeSummarizer:
