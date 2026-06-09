@@ -176,10 +176,11 @@ This is a content aggregation and processing system that collects articles from 
 - **GoogleAlertsCollector**: Processes Google Alerts emails via Gmail API
 - **YouTubeCollector**: Downloads and transcribes YouTube videos
   - `fetch_subtitles()`: yt-dlp で字幕（手動→自動、ja→en 優先）を取得し VTT をプレーンテキスト化（`parse_subtitle_to_text`）。取得失敗・字幕なしは None
-  - `get_transcript()`: 字幕優先→無ければ既存 `process_video`（音声DL + MLX Whisper）にフォールバック。`source` を `"subtitle"`/`"whisper"` で返す
+  - `get_transcript()`: 字幕優先→無ければ既存 `process_video`（音声DL + MLX Whisper）にフォールバック。`source` を `"subtitle"`/`"whisper"` で返す。**ライブ配信中/配信予定（`live_status` が `is_live`/`is_upcoming`）はライブエッジ付近の断片しか取得できず内容を反映しないため None を返してスキップ**（呼び出し側は processed に記録しないため、VOD化後の次回実行で再取得される）
 - **YouTubeEmailCollector**: 特定送信元(from)の Gmail を取得し本文 HTML から YouTube 動画 URL を抽出（`youtube-mail-digest` 用）
   - Gmail 認証・本文抽出は `GoogleAlertsCollector` のパターンを流用し、`from:` をパラメータ化（token.pickle 共有、`gmail.readonly`）
   - `extract_youtube_urls()` / `normalize_youtube_url()` / `extract_video_id()`: watch / youtu.be / shorts / embed を正規化し video_id で dedup（純粋関数、単体テスト済み）
+  - `_decode_redirect_urls()`: WordPress digest メール等で実 URL が `?action=user_content_redirect&...&encoded_url=<base64>` の `encoded_url` に base64 で内包されるケースに対応し、デコードして候補 URL に展開（padding 補正＋標準/urlsafe フォールバック）。`extract_youtube_urls` から呼ばれる
 - **XTrendCollector**: Fetches trending topics, keyword search results, and user timelines from X (Twitter) via TwitterAPI.io
   - 3 sources: Trends (Japan/Global WOEID), keyword search, user timeline monitoring
   - `collect_all()`: Parallel collection of all 3 sources via `asyncio.gather`

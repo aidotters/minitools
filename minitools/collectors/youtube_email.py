@@ -130,11 +130,59 @@ def normalize_youtube_url(url: str) -> Optional[str]:
     return f"https://www.youtube.com/watch?v={video_id}"
 
 
+def _decode_redirect_urls(url: str) -> List[str]:
+    """
+    リダイレクト URL に base64 で内包された実 URL を取り出す。
+
+    WordPress.com の購読 digest メールは、実リンクを
+    `?action=user_content_redirect&...&encoded_url=<base64>` の
+    `encoded_url` パラメータに base64 エンコードして埋め込む。
+    その値をデコードして候補 URL として返す（WordPress 限定スコープ。
+    汎用リダイレクト展開はしない）。
+
+    Args:
+        url: 任意の URL
+
+    Returns:
+        デコードで得られた URL のリスト。`encoded_url` が無い、または
+        デコード不能な場合は空リスト。
+    """
+    if not url:
+        return []
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return []
+
+    qs = urllib.parse.parse_qs(parsed.query)
+    encoded_values = qs.get("encoded_url")
+    if not encoded_values:
+        return []
+
+    decoded: List[str] = []
+    for value in encoded_values:
+        # padding 補正（base64 は 4 文字境界が必要）
+        padded = value + "=" * (-len(value) % 4)
+        for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+            try:
+                # binascii.Error は ValueError のサブクラス
+                text = decoder(padded).decode("utf-8", errors="ignore")
+            except ValueError:
+                continue
+            if text:
+                decoded.append(text)
+            break
+
+    return decoded
+
+
 def extract_youtube_urls(html: str) -> List[str]:
     """
     HTML 本文から YouTube 動画 URL を全て抽出し、正規化・重複除去して返す。
 
-    `<a href>` のリンクに加え、本文テキスト中の生 URL も拾う。
+    `<a href>` のリンクに加え、本文テキスト中の生 URL、および
+    WordPress リダイレクトの `encoded_url`（base64）に内包された URL も拾う。
 
     Args:
         html: メール本文の HTML
@@ -154,6 +202,10 @@ def extract_youtube_urls(html: str) -> List[str]:
     # テキスト中の生 URL（href に現れないケースの保険）
     text = soup.get_text(separator=" ")
     candidates.extend(re.findall(r"https?://[^\s\"'<>]+", text))
+
+    # リダイレクト URL に内包された実 URL を展開（WordPress encoded_url 等）
+    for raw in list(candidates):
+        candidates.extend(_decode_redirect_urls(raw))
 
     normalized: List[str] = []
     seen_ids = set()
