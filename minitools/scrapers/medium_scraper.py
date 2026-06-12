@@ -23,9 +23,46 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from minitools.scrapers.article_dates import (
+    ArticleDates,
+    empty_dates,
+    extract_dates_from_signals,
+)
 from minitools.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# ページ DOM から JSON-LD 日付ペアと OpenGraph meta を収集する JS。
+# JSON-LD は配列 / ``@graph`` をフラット化し、datePublished/dateModified を持つ要素を拾う。
+_DATE_SIGNAL_JS = """
+() => {
+  const pairs = [];
+  for (const el of document.querySelectorAll('script[type="application/ld+json"]')) {
+    let parsed;
+    try { parsed = JSON.parse(el.textContent); } catch (e) { continue; }
+    const items = Array.isArray(parsed)
+      ? parsed
+      : (parsed && Array.isArray(parsed['@graph']) ? parsed['@graph'] : [parsed]);
+    for (const o of items) {
+      if (o && (o.datePublished || o.dateModified)) {
+        pairs.push({
+          datePublished: o.datePublished || null,
+          dateModified: o.dateModified || null,
+        });
+      }
+    }
+  }
+  const meta = (p) => {
+    const e = document.querySelector(`meta[property="${p}"]`);
+    return e ? e.getAttribute('content') : null;
+  };
+  return {
+    jsonld: pairs,
+    ogPublished: meta('article:published_time'),
+    ogModified: meta('article:modified_time'),
+  };
+}
+"""
 
 # CDP用Chromeプロファイルのデフォルトパス
 DEFAULT_CHROME_PROFILE = Path.home() / ".minitools" / "chrome-profile"
@@ -121,6 +158,9 @@ class MediumScraper:
         self._browser: Any = None
         self._context: Any = None
         self._chrome_process: Any = None
+        # 直近 scrape_article で抽出した元日付メタ（公開日 / 更新日）。
+        # scrape_article 冒頭でリセットされ、本文取得成功時に上書きされる。
+        self.last_dates: ArticleDates = empty_dates()
 
     async def __aenter__(self) -> "MediumScraper":
         """ブラウザを起動/接続する"""
@@ -384,6 +424,9 @@ class MediumScraper:
         if not self._context:
             raise RuntimeError("Browser not initialized. Use 'async with' context.")
 
+        # 早期 return ブランチで前回の値を引き継がないよう、関数冒頭でリセットする。
+        self.last_dates = empty_dates()
+
         page = await self._context.new_page()
         try:
             logger.info(f"Scraping article: {url}")
@@ -449,6 +492,9 @@ class MediumScraper:
                         "incomplete page load."
                     )
 
+                # 元日付メタ（公開日 / 更新日）を抽出する（ベストエフォート・非クリティカル）
+                await self._extract_dates(page)
+
                 return html
 
             logger.error(f"No <article> tag found for: {url}")
@@ -459,6 +505,29 @@ class MediumScraper:
             return ""
         finally:
             await page.close()
+
+    async def _extract_dates(self, page: Any) -> None:
+        """開いているページから元日付メタを抽出し ``self.last_dates`` に格納する。
+
+        JSON-LD（``datePublished`` / ``dateModified``）を正本とし、欠落時のみ
+        OpenGraph meta にフォールバックする。抽出失敗は非クリティカル（``unknown`` のまま）。
+        """
+        try:
+            signals = await page.evaluate(_DATE_SIGNAL_JS)
+            if not isinstance(signals, dict):
+                return
+            self.last_dates = extract_dates_from_signals(
+                jsonld_pairs=signals.get("jsonld") or [],
+                og_published=signals.get("ogPublished"),
+                og_modified=signals.get("ogModified"),
+            )
+            logger.info(
+                "Article dates: published=%s last_modified=%s",
+                self.last_dates["published_at"],
+                self.last_dates["last_modified"],
+            )
+        except Exception as e:
+            logger.warning(f"Date extraction failed (non-critical): {e}")
 
     async def _is_cloudflare_challenge(self, page: Any) -> bool:
         """現在のページがCloudflareチャレンジかどうかを判定"""

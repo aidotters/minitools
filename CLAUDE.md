@@ -63,6 +63,10 @@ uv run medium-translate --url "https://..." --debug              # Dump fetched 
 # 翻訳・要約・Notion保存は一切行わず、英語原文 Markdown を stdout に出力（llm-wiki 連携用）
 uv run scrape-medium --url "https://medium.com/..."              # Standalone Playwright (Cloudflare に弱い)
 uv run scrape-medium --url "https://medium.com/..." --cdp        # CDP モード（ログイン済み Chrome 利用、推奨）
+uv run scrape-medium --url "https://medium.com/..." --emit-meta  # 先頭に YAML フロントマター（published_at/last_modified）を前置
+# --emit-meta: JSON-LD（datePublished/dateModified）を正本に元日付メタを抽出し、本文の前に
+#   ---\npublished_at: YYYY-MM-DD\nlast_modified: YYYY-MM-DD\npublished_at_source: html-meta\n
+#   last_modified_source: html-meta\n--- を出力（取得不能フィールドは unknown）。既定 off=本文のみ（後方互換）。
 
 # Discover Medium articles from Notion (JSON to stdout)
 # Notion Medium DB から直近 N 日分の記事を JSON 配列で stdout 出力（llm-wiki 連携用）
