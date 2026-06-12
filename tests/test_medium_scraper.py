@@ -163,6 +163,102 @@ class TestMediumScraperScrapeArticle:
             await scraper.scrape_article("https://medium.com/test")
 
 
+class TestMediumScraperDateExtraction:
+    """元日付メタ抽出（last_dates）のテスト"""
+
+    @pytest.mark.asyncio
+    async def test_last_dates_populated_on_success(self, scraper):
+        """本文取得成功時に JSON-LD 由来の日付が last_dates に格納される"""
+        mock_page = AsyncMock()
+        mock_article = AsyncMock()
+        mock_article.evaluate.return_value = "<article>" + "x" * 4000 + "</article>"
+
+        async def query_selector(selector):
+            if selector == "article":
+                return mock_article
+            return None
+
+        mock_page.query_selector = AsyncMock(side_effect=query_selector)
+        mock_page.title.return_value = "Test - Medium"
+        mock_page.close = AsyncMock()
+        # page.evaluate は日付シグナル JS の戻り値（_extract_dates 用）
+        mock_page.evaluate = AsyncMock(
+            return_value={
+                "jsonld": [
+                    {
+                        "datePublished": "2026-03-09T15:05:43Z",
+                        "dateModified": "2026-03-26T08:15:41Z",
+                    }
+                ],
+                "ogPublished": "2026-03-26T08:15:41.297Z",
+                "ogModified": None,
+            }
+        )
+
+        mock_context = MagicMock()
+        mock_context.new_page = AsyncMock(return_value=mock_page)
+        scraper._context = mock_context
+
+        await scraper.scrape_article("https://medium.com/test")
+
+        # JSON-LD datePublished(3/9) が og(3/26) に勝つ
+        assert scraper.last_dates["published_at"] == "2026-03-09"
+        assert scraper.last_dates["last_modified"] == "2026-03-26"
+        assert scraper.last_dates["published_at_source"] == "html-meta"
+
+    @pytest.mark.asyncio
+    async def test_last_dates_reset_on_early_return(self, scraper):
+        """前回の値が残らないよう、article 不在の早期 return で last_dates がリセットされる"""
+        # 事前に値を汚しておく
+        scraper.last_dates = {
+            "published_at": "2020-01-01",
+            "last_modified": "2020-01-01",
+            "published_at_source": "html-meta",
+            "last_modified_source": "html-meta",
+        }
+
+        mock_page = AsyncMock()
+        mock_page.query_selector.return_value = None  # article 不在
+        mock_page.title.return_value = "Some Page"
+        mock_page.close = AsyncMock()
+
+        mock_context = MagicMock()
+        mock_context.new_page = AsyncMock(return_value=mock_page)
+        scraper._context = mock_context
+
+        result = await scraper.scrape_article("https://medium.com/test")
+        assert result == ""
+        # 早期 return でもリセットされ、stale な 2020 が残らない
+        assert scraper.last_dates["published_at"] is None
+        assert scraper.last_dates["published_at_source"] == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_date_extraction_failure_non_critical(self, scraper):
+        """日付抽出が例外でも本文取得は成功し last_dates は unknown のまま"""
+        mock_page = AsyncMock()
+        mock_article = AsyncMock()
+        mock_article.evaluate.return_value = "<article>" + "x" * 4000 + "</article>"
+
+        async def query_selector(selector):
+            if selector == "article":
+                return mock_article
+            return None
+
+        mock_page.query_selector = AsyncMock(side_effect=query_selector)
+        mock_page.title.return_value = "Test - Medium"
+        mock_page.close = AsyncMock()
+        mock_page.evaluate = AsyncMock(side_effect=Exception("eval boom"))
+
+        mock_context = MagicMock()
+        mock_context.new_page = AsyncMock(return_value=mock_page)
+        scraper._context = mock_context
+
+        result = await scraper.scrape_article("https://medium.com/test")
+        assert "<article>" in result  # 本文は取得できる
+        assert scraper.last_dates["published_at"] is None
+        assert scraper.last_dates["published_at_source"] == "unknown"
+
+
 class TestMediumScraperCloudflareDetection:
     """Cloudflareチャレンジ検出のテスト"""
 
