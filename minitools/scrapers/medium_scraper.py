@@ -114,6 +114,63 @@ def _patch_playwright_cdp_download_behavior() -> None:
         logger.debug(f"Failed to patch Playwright crBrowser.js (non-critical): {e}")
 
 
+def _patch_playwright_cdp_service_worker_assert() -> None:
+    """CDP接続時に拡張機能のservice workerでnodeドライバがクラッシュする問題を回避する。
+
+    Chrome(Manifest V3)拡張のバックグラウンドservice workerがCDPセッションに
+    attachされると、targetInfoにbrowserContextIdが無いことがある。
+    PlaywrightのcrBrowser._onAttachedToTargetはこれをassertで前提しており、
+    満たされないとnodeドライバ全体がクラッシュ→Python側に
+    「Connection closed while reading from the driver」として現れる。
+    browserContextIdが無いターゲットはdetachして無視するようパッチする。
+    """
+    try:
+        import playwright
+
+        cr_browser_js = (
+            Path(playwright.__file__).parent
+            / "driver"
+            / "package"
+            / "lib"
+            / "server"
+            / "chromium"
+            / "crBrowser.js"
+        )
+        if not cr_browser_js.exists():
+            return
+
+        content = cr_browser_js.read_text()
+
+        # 既にパッチ済みの場合はスキップ
+        marker = "// Patched: ignore targets without browserContextId"
+        if marker in content:
+            return
+
+        # assert(targetInfo.browserContextId, ...) をガード句に置き換える
+        old = (
+            "(0, import_assert.assert)(targetInfo.browserContextId, "
+            '"targetInfo: " + JSON.stringify(targetInfo, null, 2));'
+        )
+        new = (
+            "if (!targetInfo.browserContextId) { session.detach().catch(() => {}); "
+            f"return; }}  {marker} (e.g. extension service workers)"
+        )
+
+        if old in content:
+            cr_browser_js.write_text(content.replace(old, new))
+            logger.info(
+                "Patched Playwright crBrowser.js to ignore targets "
+                "without browserContextId (extension service workers)"
+            )
+        else:
+            logger.debug(
+                "Playwright crBrowser.js service worker patch target not found "
+                "(may already be fixed upstream)"
+            )
+    except Exception as e:
+        logger.debug(f"Failed to patch Playwright crBrowser.js (non-critical): {e}")
+
+
 def _find_chrome_path() -> Optional[str]:
     """システムのChromeブラウザのパスを検出する"""
     if sys.platform == "darwin":
@@ -167,6 +224,15 @@ class MediumScraper:
         try:
             from playwright.async_api import async_playwright
 
+            # JSドライバーのパッチは async_playwright().start() より前に当てる。
+            # start() でnodeドライバープロセスが起動しcrBrowser.jsをメモリに
+            # ロードするため、起動後にディスクを書き換えても反映されない。
+            # - setDownloadBehavior: 新しいChromeが拒否する未サポートコマンドを無視
+            # - service_worker assert: browserContextIdの無い拡張SWでのクラッシュ回避
+            if self.cdp_mode:
+                _patch_playwright_cdp_download_behavior()
+                _patch_playwright_cdp_service_worker_assert()
+
             self._playwright = await async_playwright().start()
 
             if self.cdp_mode:
@@ -209,10 +275,6 @@ class MediumScraper:
             await self._prompt_login_before_cdp()
 
         # CDP接続
-        # Playwright 1.49+がBrowser.setDownloadBehaviorを送信し、
-        # 新しいChromeが拒否する問題を回避するためにJSドライバーをパッチする
-        _patch_playwright_cdp_download_behavior()
-
         logger.info(f"Connecting to Chrome via CDP (port {CDP_PORT})...")
         try:
             self._browser = await self._playwright.chromium.connect_over_cdp(
