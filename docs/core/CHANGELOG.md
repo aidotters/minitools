@@ -50,6 +50,10 @@
   - launchd 用 plist `scripts/launchd/com.tak.minitools.google-alert-daily-digest.plist` を同梱（毎日 19:00 ローカル時刻）
 
 ### Changed
+- **X動画リアルタイム翻訳MVPを外部プロジェクトへ分離** (2026-06-21)
+  - Chrome拡張機能 + Swift製macOS companionは既存Python CLI群とビルド・テスト・配布単位が異なるため、実装を `/Users/tak/Projects/x-realtime-video-translation` に分離
+  - `minitools` 側にはアイデア・設計メモのみを残し、Pythonパッケージ、CLIエントリーポイント、Docker構成には影響を与えない
+
 - **`medium` / `google_alerts` の翻訳デフォルトプロバイダを `ollama` → `gemini` に変更** (2026-05-03)
   - `defaults.medium.translate_provider`: `ollama` → `gemini`
   - `defaults.medium.translate_model`: `gemma3:27b` → `gemini-3.1-flash-lite-preview`

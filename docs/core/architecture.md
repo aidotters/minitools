@@ -776,6 +776,10 @@ flowchart LR
 
 ## デプロイメントアーキテクチャ
 
+### 関連外部プロジェクト
+
+X動画リアルタイム翻訳MVPは、Chrome拡張機能とSwift製macOS companionで構成される別アプリのため、このPython CLIコードベースから分離しました。実装は `/Users/tak/Projects/x-realtime-video-translation` で管理し、`minitools` 側にはアイデア・設計メモのみを残します。
+
 ### ローカル実行
 
 ```mermaid
