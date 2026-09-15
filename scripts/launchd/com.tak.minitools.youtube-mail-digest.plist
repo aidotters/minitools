@@ -13,7 +13,7 @@
         <string>24</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/tak/Projects/minitools</string>
+    <string>/Users/tak/Projects/tools/minitools</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -69,8 +69,8 @@
         </dict>
     </array>
     <key>StandardOutPath</key>
-    <string>/Users/tak/Projects/minitools/logs/youtube-mail-digest.log</string>
+    <string>/Users/tak/Projects/tools/minitools/logs/youtube-mail-digest.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/tak/Projects/minitools/logs/youtube-mail-digest.log</string>
+    <string>/Users/tak/Projects/tools/minitools/logs/youtube-mail-digest.log</string>
 </dict>
 </plist>
