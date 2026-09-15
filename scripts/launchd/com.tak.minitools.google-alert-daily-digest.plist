@@ -11,7 +11,7 @@
         <string>google-alert-daily-digest</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/tak/Projects/minitools</string>
+    <string>/Users/tak/Projects/tools/minitools</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -25,8 +25,8 @@
         <integer>0</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>/Users/tak/Projects/minitools/logs/google-alert-daily-digest.log</string>
+    <string>/Users/tak/Projects/tools/minitools/logs/google-alert-daily-digest.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/tak/Projects/minitools/logs/google-alert-daily-digest.log</string>
+    <string>/Users/tak/Projects/tools/minitools/logs/google-alert-daily-digest.log</string>
 </dict>
 </plist>
