@@ -11,6 +11,7 @@ import os
 import asyncio
 import logging
 import argparse
+import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,6 +26,7 @@ from minitools.publishers.slack import SlackPublisher
 from minitools.utils.config import get_config
 from minitools.utils.logger import setup_logger
 from minitools.utils.processed_store import ProcessedStore
+from minitools.utils.network import wait_for_network
 
 load_dotenv()
 
@@ -117,6 +119,11 @@ async def main_async():
         log_file="youtube_mail_digest.log",
         level=log_level,
     )
+
+    # スリープ復帰直後の実行に備え、名前解決できるまで待つ
+    if not wait_for_network(["gmail.googleapis.com", "hooks.slack.com"]):
+        logger.error("ネットワーク未接続のため処理を中止します")
+        sys.exit(1)
 
     date: Optional[datetime] = None
     if args.date:

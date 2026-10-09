@@ -20,6 +20,7 @@ from minitools.publishers.notion import NotionPublisher
 from minitools.publishers.slack import SlackPublisher
 from minitools.utils.logger import setup_logger
 from minitools.utils.config import get_config
+from minitools.utils.network import wait_for_network
 
 load_dotenv()
 
@@ -63,6 +64,11 @@ async def main_async():
     logger = setup_logger(
         "scripts.google_alerts", log_file="google_alerts.log", level=log_level
     )
+
+    # スリープ復帰直後の実行に備え、名前解決できるまで待つ
+    if not wait_for_network(["gmail.googleapis.com", "hooks.slack.com"]):
+        logger.error("ネットワーク未接続のため処理を中止します")
+        sys.exit(1)
 
     # 日付の設定
     target_date = None

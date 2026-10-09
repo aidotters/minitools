@@ -22,6 +22,7 @@ from minitools.publishers.slack import SlackPublisher
 from minitools.readers.notion import NotionReader
 from minitools.utils.config import get_config
 from minitools.utils.logger import setup_logger
+from minitools.utils.network import wait_for_network
 
 logger = setup_logger(
     name="scripts.google_alert_daily_digest",
@@ -270,6 +271,11 @@ Examples:
     logger.info(f"Dedup: {'disabled' if args.no_dedup else 'enabled'}")
     logger.info(f"Quiet: {args.quiet}")
     logger.info("=" * 60)
+
+    # スリープ復帰直後の実行に備え、名前解決できるまで待つ
+    if not wait_for_network(["api.notion.com", "hooks.slack.com"]):
+        logger.error("ネットワーク未接続のため処理を中止します")
+        sys.exit(1)
 
     exit_code = asyncio.run(
         generate_digest(

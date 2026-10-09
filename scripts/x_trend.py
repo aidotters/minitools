@@ -26,6 +26,7 @@ from minitools.processors.x_trend import XTrendProcessor
 from minitools.publishers.slack import SlackPublisher
 from minitools.utils.config import get_config
 from minitools.utils.logger import setup_logger
+from minitools.utils.network import wait_for_network
 
 logger = setup_logger(name="scripts.x_trend", log_file="x_trend.log")
 
@@ -232,6 +233,11 @@ Examples:
         print(
             "エラー: すべてのソースがスキップされています。少なくとも1つのソースを有効にしてください。"
         )
+        sys.exit(1)
+
+    # スリープ復帰直後の実行に備え、名前解決できるまで待つ
+    if not wait_for_network(["api.twitterapi.io", "hooks.slack.com"]):
+        logger.error("ネットワーク未接続のため処理を中止します")
         sys.exit(1)
 
     # 地域の決定
