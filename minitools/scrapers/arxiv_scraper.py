@@ -4,6 +4,10 @@ ArXiv paper scraper using PDF + marker-pdf.
 Downloads ArXiv papers as PDF, converts to Markdown using marker-pdf,
 and fetches metadata via ArXiv API.
 
+Non-arXiv URLs are also supported:
+    - Generic PDF URLs: converted with marker-pdf, metadata from PDF info / Markdown
+    - HTML pages: converted with ``WebDocumentConverter`` (math / code preserved)
+
 Usage:
     async with ArxivScraper() as scraper:
         result = await scraper.fetch_and_parse("https://arxiv.org/abs/2401.12345")
@@ -21,6 +25,12 @@ from urllib.parse import urlparse
 import feedparser
 import httpx
 
+from minitools.scrapers.web_document import (
+    WebDocumentConverter,
+    derive_document_id,
+    extract_abstract_from_markdown,
+    extract_title_from_markdown,
+)
 from minitools.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -41,13 +51,18 @@ class PaperImage:
 
 @dataclass
 class PaperMetadata:
-    """論文メタデータ"""
+    """論文メタデータ
+
+    ``arxiv_id`` は非 arXiv 文書では文書ID（``derive_document_id``）を保持する。
+    既存の metadata.json との互換のためフィールド名は変更しない。
+    """
 
     arxiv_id: str
     title: str
     authors: list[str]
     published: str  # YYYY-MM-DD形式
     abstract: str
+    source_type: str = "arxiv"  # "arxiv" | "pdf" | "html"
 
 
 @dataclass
@@ -92,6 +107,32 @@ class ArxivScraper:
             return False
         parsed = urlparse(url)
         hostname = parsed.hostname or ""
+        return hostname in ("arxiv.org", "export.arxiv.org", "www.arxiv.org")
+
+    @staticmethod
+    def validate_url(url: str) -> bool:
+        """http/https の URL かどうか（arXiv 以外の PDF / Webページ用）"""
+        if not url:
+            return False
+        parsed = urlparse(url.strip())
+        return parsed.scheme in ("http", "https") and bool(parsed.hostname)
+
+    @classmethod
+    def document_id(cls, url: str) -> str:
+        """URLから出力フォルダ名に使う文書IDを導出する
+
+        arXiv URL は従来どおり arXiv ID（``/`` は ``_`` に置換）、それ以外は
+        ``derive_document_id`` による ``{host}_{slug}_{hash8}`` 形式。
+        """
+        if cls._is_arxiv_host(url):
+            arxiv_id = cls.extract_arxiv_id(url)
+            if arxiv_id:
+                return arxiv_id.replace("/", "_")
+        return derive_document_id(url)
+
+    @staticmethod
+    def _is_arxiv_host(url: str) -> bool:
+        hostname = urlparse(url.strip()).hostname or ""
         return hostname in ("arxiv.org", "export.arxiv.org", "www.arxiv.org")
 
     @staticmethod
@@ -324,18 +365,174 @@ class ArxivScraper:
 
         return None
 
+    async def fetch_document(self, url: str) -> httpx.Response | None:
+        """任意 URL を GET する（リトライ付き）
+
+        Returns:
+            成功時の httpx.Response（失敗時はNone）
+        """
+        if not self._client:
+            raise RuntimeError("Client not initialized. Use 'async with' context.")
+
+        logger.info(f"Fetching document: {url}")
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = await self._client.get(url)
+                response.raise_for_status()
+                logger.info(f"Document fetched: {len(response.content)} bytes")
+                return response
+            except (
+                httpx.HTTPStatusError,
+                httpx.RequestError,
+                httpx.TimeoutException,
+            ) as e:
+                if attempt < MAX_RETRIES - 1:
+                    delay = RETRY_DELAYS[attempt]
+                    logger.warning(
+                        f"Fetch error (attempt {attempt + 1}/{MAX_RETRIES}): "
+                        f"{e}, retrying in {delay}s..."
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        f"Failed to fetch document after {MAX_RETRIES} attempts: {e}"
+                    )
+                    return None
+        return None
+
+    @staticmethod
+    def _is_pdf_response(response: httpx.Response) -> bool:
+        content_type = response.headers.get("content-type", "").lower()
+        return "pdf" in content_type or response.content[:5] == b"%PDF-"
+
+    @staticmethod
+    def _is_html_response(response: httpx.Response) -> bool:
+        content_type = response.headers.get("content-type", "").lower()
+        if "html" in content_type:
+            return True
+        head = response.content[:512].lstrip().lower()
+        return head.startswith(b"<!doctype html") or head.startswith(b"<html")
+
+    @staticmethod
+    def extract_pdf_metadata(
+        pdf_data: bytes, markdown: str, doc_id: str
+    ) -> PaperMetadata:
+        """一般 PDF のメタデータを PDF 情報辞書と Markdown から組み立てる
+
+        PDF の Title は空や "Microsoft Word - xxx.docx" 等のことが多いため、
+        その場合は Markdown の先頭見出しにフォールバックする。
+        """
+        info: dict[str, Any] = {}
+        try:
+            import fitz  # PyMuPDF
+
+            with fitz.open(stream=pdf_data, filetype="pdf") as doc:
+                info = dict(doc.metadata or {})
+        except Exception as e:
+            logger.debug(f"Failed to read PDF metadata: {e}")
+
+        pdf_title = str(info.get("title") or "").strip()
+        if re.match(r"^(microsoft word|untitled)\b", pdf_title, re.I) or re.search(
+            r"\.(docx?|tex|dvi|pdf)$", pdf_title, re.I
+        ):
+            pdf_title = ""
+        title = pdf_title or extract_title_from_markdown(markdown) or doc_id
+
+        author = str(info.get("author") or "").strip()
+        # 脚注記号（"Alec Radford*" / "Dario Amodei**" / "†"）は除去
+        authors = [
+            cleaned
+            for a in re.split(r"[;,]| and ", author)
+            if (cleaned := re.sub(r"[*†‡§¶\d]+$", "", a.strip()).strip())
+        ]
+
+        # PDF 日付は "D:20190214..." 形式
+        published = ""
+        date_match = re.match(
+            r"^D:(\d{4})(\d{2})(\d{2})", str(info.get("creationDate") or "")
+        )
+        if date_match:
+            published = "-".join(date_match.groups())
+
+        return PaperMetadata(
+            arxiv_id=doc_id,
+            title=title,
+            authors=authors,
+            published=published,
+            abstract=extract_abstract_from_markdown(markdown),
+            source_type="pdf",
+        )
+
+    async def _fetch_and_parse_generic(self, url: str) -> PaperContent | None:
+        """arXiv 以外の URL を取得し、PDF / HTML に応じて Markdown 化する"""
+        response = await self.fetch_document(url)
+        if response is None:
+            return None
+
+        doc_id = self.document_id(url)
+
+        if self._is_pdf_response(response):
+            pdf_data = response.content
+            loop = asyncio.get_event_loop()
+            try:
+                markdown, images = await loop.run_in_executor(
+                    None, self.parse_to_markdown, pdf_data
+                )
+            except Exception as e:
+                logger.error(f"Failed to parse PDF: {e}")
+                return None
+            if not markdown:
+                logger.error(f"Empty markdown from PDF: {url}")
+                return None
+            return PaperContent(
+                markdown=markdown,
+                images=images,
+                metadata=self.extract_pdf_metadata(pdf_data, markdown, doc_id),
+                pdf_bytes=pdf_data,
+            )
+
+        if self._is_html_response(response):
+            logger.info("Converting HTML page to Markdown...")
+            web_doc = WebDocumentConverter().convert(
+                response.text, base_url=str(response.url)
+            )
+            if not web_doc.markdown.strip():
+                logger.error(f"Empty markdown from HTML: {url}")
+                return None
+            logger.info(f"Markdown generated: {len(web_doc.markdown)} chars")
+            return PaperContent(
+                markdown=web_doc.markdown,
+                metadata=PaperMetadata(
+                    arxiv_id=doc_id,
+                    title=web_doc.title or doc_id,
+                    authors=web_doc.authors,
+                    published=web_doc.published,
+                    abstract=web_doc.abstract,
+                    source_type="html",
+                ),
+            )
+
+        content_type = response.headers.get("content-type", "")
+        logger.error(f"Unsupported content-type ({content_type}): {url}")
+        return None
+
     async def fetch_and_parse(self, url: str) -> PaperContent | None:
         """PDF取得→解析→メタデータ取得の一連処理
 
+        arXiv URL は arXiv の PDF と API メタデータを使う。それ以外の URL は
+        レスポンスの種類（PDF / HTML）に応じて変換する。
+
         Args:
-            url: ArXiv論文のURL
+            url: 論文・文書のURL（arXiv / 一般 PDF / Webページ）
 
         Returns:
             PaperContent（失敗時はNone）
         """
         if not self.validate_arxiv_url(url):
-            logger.error(f"ArXiv URLではありません: {url}")
-            return None
+            if not self.validate_url(url):
+                logger.error(f"URLが不正です: {url}")
+                return None
+            return await self._fetch_and_parse_generic(url)
 
         # PDF取得
         pdf_data = await self.fetch_pdf(url)

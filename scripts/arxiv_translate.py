@@ -2,11 +2,16 @@
 """
 ArXiv paper full-text translation script.
 
+Besides arXiv, generic PDF URLs and HTML pages (e.g. technical textbooks)
+are also supported. The input type is detected from the fetched response.
+
 Supports both full pipeline and individual step execution:
 
     # Full pipeline (backward compatible)
     uv run arxiv-translate --url "https://arxiv.org/abs/2401.12345"
     uv run arxiv-translate --url "https://..." --provider openai --dry-run
+    uv run arxiv-translate --url "https://example.com/paper.pdf"     # Generic PDF
+    uv run arxiv-translate --url "https://d2l.ai/chapter_x/page.html"  # Web page
 
     # Individual steps
     uv run arxiv-translate parse     --url "https://arxiv.org/abs/2401.12345"
@@ -58,9 +63,9 @@ def resolve_paths(url: str) -> tuple[str, Path, Path, Path]:
         (safe_id, raw_path, translated_path, metadata_path)
 
     各論文は ``outputs/arxiv_translate/{safe_id}/`` 直下にまとめて配置される。
+    safe_id は arXiv なら arXiv ID、それ以外は ``{host}_{slug}_{hash8}``。
     """
-    arxiv_id = ArxivScraper.extract_arxiv_id(url) or "unknown"
-    safe_id = arxiv_id.replace("/", "_")
+    safe_id = ArxivScraper.document_id(url)
     paper_dir = OUTPUT_DIR / safe_id
     paper_dir.mkdir(parents=True, exist_ok=True)
     return (
@@ -73,8 +78,7 @@ def resolve_paths(url: str) -> tuple[str, Path, Path, Path]:
 
 def resolve_pdf_path(url: str) -> Path:
     """URLからPDFファイルパスを解決する"""
-    arxiv_id = ArxivScraper.extract_arxiv_id(url) or "unknown"
-    safe_id = arxiv_id.replace("/", "_")
+    safe_id = ArxivScraper.document_id(url)
     paper_dir = OUTPUT_DIR / safe_id
     paper_dir.mkdir(parents=True, exist_ok=True)
     # PDF はフォルダ外に持ち出した際の識別性を確保するため safe_id を維持
@@ -114,7 +118,7 @@ async def step_parse(
     """Step 1: PDF取得→Markdown変換→メタデータ保存→（任意）VLM修復
 
     Args:
-        url: arxiv URL
+        url: 論文・文書の URL（arXiv / 一般 PDF / Webページ）
         scraper: ArxivScraper インスタンス
         enable_repair: True の場合、PDF を永続化して VLM 修復を実行
         repairer: enable_repair=True 時の VlmParseRepairer インスタンス
@@ -122,8 +126,8 @@ async def step_parse(
     Returns:
         "success", "skipped", "failed"
     """
-    if not scraper.validate_arxiv_url(url):
-        logger.error(f"ArXiv URLではありません: {url}")
+    if not scraper.validate_url(url):
+        logger.error(f"URLが不正です: {url}")
         return "failed"
 
     safe_id, raw_path, _, metadata_path = resolve_paths(url)
@@ -335,7 +339,7 @@ async def step_upload(
 
     # メタデータ読み込み（metadata.json から、なければAPI）
     metadata = load_metadata(metadata_path)
-    if not metadata:
+    if not metadata and ArxivScraper().validate_arxiv_url(url):
         arxiv_id = ArxivScraper.extract_arxiv_id(url)
         if arxiv_id:
             async with ArxivScraper() as scraper:
@@ -411,9 +415,12 @@ def _build_new_page_properties(
     japanese_summary: str | None = None,
 ) -> dict:
     """新規ページ用のNotionプロパティを構築（メタデータがあればリッチに）"""
-    url_normalized = url.replace("http://", "https://").replace(
-        "export.arxiv.org", "arxiv.org"
-    )
+    # 正規化は arXiv のみ（他サイトは find_page_by_url の照合と一致させるため原文のまま）
+    url_normalized = url
+    if ArxivScraper().validate_arxiv_url(url):
+        url_normalized = url.replace("http://", "https://").replace(
+            "export.arxiv.org", "arxiv.org"
+        )
 
     if metadata:
         properties: dict = {
@@ -441,7 +448,7 @@ def _build_new_page_properties(
             }
         return properties
     else:
-        arxiv_id = ArxivScraper.extract_arxiv_id(url) or url
+        arxiv_id = ArxivScraper.extract_arxiv_id(url) or ArxivScraper.document_id(url)
         properties = {
             "タイトル": {"title": [{"text": {"content": arxiv_id}}]},
             "URL": {"url": url_normalized},
@@ -664,13 +671,15 @@ def main():
     )
 
     parser = argparse.ArgumentParser(
-        description="ArXiv論文の全文を翻訳してNotionに保存",
+        description="論文・文書（arXiv / 一般 PDF / Webページ）の全文を翻訳してNotionに保存",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Full pipeline
   uv run arxiv-translate --url "https://arxiv.org/abs/2401.12345"
   uv run arxiv-translate --url "https://..." --provider openai --dry-run
+  uv run arxiv-translate --url "https://example.com/paper.pdf"       # 一般 PDF
+  uv run arxiv-translate --url "https://d2l.ai/chapter_x/page.html"  # Webページ
 
   # Individual steps
   uv run arxiv-translate parse     --url "https://arxiv.org/abs/2401.12345"
@@ -681,7 +690,10 @@ Examples:
 
     # 全パイプライン用の引数（サブコマンドなしの場合）
     parser.add_argument(
-        "--url", type=str, action="append", help="ArXiv論文のURL（複数指定可）"
+        "--url",
+        type=str,
+        action="append",
+        help="論文・文書のURL（arXiv / PDF / Webページ、複数指定可）",
     )
     parser.add_argument(
         "--provider", choices=["ollama", "openai", "gemini"], default=default_provider
@@ -705,7 +717,11 @@ Examples:
     # parse
     sp_parse = subparsers.add_parser("parse", help="PDF→Markdown変換(+VLM修復)")
     sp_parse.add_argument(
-        "--url", type=str, action="append", required=True, help="ArXiv論文のURL"
+        "--url",
+        type=str,
+        action="append",
+        required=True,
+        help="論文・文書のURL（arXiv / PDF / Webページ）",
     )
     sp_parse.add_argument(
         "--provider",
@@ -729,7 +745,11 @@ Examples:
     # translate
     sp_translate = subparsers.add_parser("translate", help="Markdown→日本語翻訳のみ")
     sp_translate.add_argument(
-        "--url", type=str, action="append", required=True, help="ArXiv論文のURL"
+        "--url",
+        type=str,
+        action="append",
+        required=True,
+        help="論文・文書のURL（arXiv / PDF / Webページ）",
     )
     sp_translate.add_argument(
         "--provider", choices=["ollama", "openai", "gemini"], default=default_provider
@@ -739,7 +759,11 @@ Examples:
     # upload
     sp_upload = subparsers.add_parser("upload", help="翻訳済みMarkdown→Notion保存のみ")
     sp_upload.add_argument(
-        "--url", type=str, action="append", required=True, help="ArXiv論文のURL"
+        "--url",
+        type=str,
+        action="append",
+        required=True,
+        help="論文・文書のURL（arXiv / PDF / Webページ）",
     )
     sp_upload.add_argument(
         "--provider",
@@ -755,7 +779,11 @@ Examples:
         "repair", help="既存 raw.md に対し VLM 修復のみ実行"
     )
     sp_repair.add_argument(
-        "--url", type=str, action="append", required=True, help="ArXiv論文のURL"
+        "--url",
+        type=str,
+        action="append",
+        required=True,
+        help="論文・文書のURL（arXiv / PDF / Webページ）",
     )
     sp_repair.add_argument(
         "--provider",
@@ -799,7 +827,7 @@ Examples:
     )
 
     logger.info("=" * 60)
-    logger.info("ArXiv Full-Text Translator (PDF + marker-pdf)")
+    logger.info("ArXiv Full-Text Translator (arXiv / PDF / Web page)")
     logger.info("=" * 60)
     logger.info(f"Mode: {args.subcommand or 'full pipeline'}")
     logger.info(f"URLs: {len(args.url)}")

@@ -430,6 +430,10 @@ uv run discover-notion-medium --days 7 --database-id "abc123"
 # 論文PDFをダウンロード→Markdown変換→日本語翻訳→Notion保存（フルパイプライン）
 uv run arxiv-translate --url "https://arxiv.org/abs/2401.12345"
 
+# arXiv 以外の一般 PDF・Webページも同じパイプラインで翻訳できる（種類は自動判定）
+uv run arxiv-translate --url "https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf"
+uv run arxiv-translate --url "https://d2l.ai/chapter_attention-mechanisms-and-transformers/self-attention-and-positional-encoding.html"
+
 # OpenAIプロバイダーで翻訳
 uv run arxiv-translate --url "https://..." --provider openai
 
@@ -452,6 +456,19 @@ uv run arxiv-translate parse  --url "https://..." --max-total-calls 60
 uv run arxiv-translate repair --url "https://..." --max-total-calls 60
 uv run arxiv-translate        --url "https://..." --max-total-calls 60   # フルパイプラインでも指定可
 ```
+
+##### arXiv 以外の入力
+
+| 入力 | 判定 | 変換 | メタデータ | 画像 | VLM修復 |
+|---|---|---|---|---|---|
+| arXiv URL | ホスト名 | arXiv PDF → marker-pdf | arXiv API | Notion へアップロード | あり |
+| 一般 PDF URL | `%PDF-` / content-type | marker-pdf | PDF 情報辞書 → 先頭見出し、Abstract 節 | Notion へアップロード | あり |
+| Webページ | content-type `text/html` | HTML → Markdown（数式 `$`/`$$`・コード・表を保持） | `citation_*` / `og:*` / `<title>` | 元サイトの URL を外部画像として参照 | なし |
+
+- 保存先は ArXiv と同じ Notion DB（`NOTION_ARXIV_DATABASE_ID`）
+- 出力フォルダ名は `{host}_{slug}_{URLのSHA-1先頭8桁}`（例: `cdn.openai.com_language_models_are_unsupervised_multitask_learners_ed680185`）
+- Webページはタブ切替のコード（フレームワーク別など）はアクティブなタブのみ残す
+- 要ログイン・JavaScript で本文を描画するページ（SPA）は非対応
 
 ##### 出力ディレクトリ構造
 

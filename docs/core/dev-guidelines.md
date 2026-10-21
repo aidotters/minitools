@@ -728,7 +728,7 @@ webhook_url = os.getenv('SLACK_ARXIV_WEBHOOK_URL') or os.getenv('SLACK_WEBHOOK_U
 - [ ] **`docs/core/CHANGELOG.md`**: `[Unreleased]` の Dependencies セクションにバージョンと採用理由を追記
 - [ ] **`docs/core/repo-structure.md`**: 新規ファイル/ディレクトリを追加
 - [ ] **`docs/core/architecture.md`**: 外部依存の役割と配置レイヤを記載
-- [ ] **`README.md`** / **`CLAUDE.md`**: セットアップ手順（FFmpeg等の外部ツール）を補足
+- [ ] **`README.md`** / **`AGENTS.md`**: セットアップ手順（FFmpeg等の外部ツール）を補足
 - [ ] **遅延 import**: モジュールロード時間を抑えるため、重量級ライブラリ（`marker-pdf`, `mlx-whisper` 等）は実際に使用する関数の中で import する
 - [ ] **テスト**: 重量級依存はモックで隔離し、CIで全件ロードしないよう配慮
 
@@ -770,5 +770,6 @@ async def generate_from_images(
 | ソースモジュール | テストファイル |
 |------------------|---------------|
 | `minitools/scrapers/arxiv_scraper.py` | `tests/test_arxiv_scraper.py` |
+| `minitools/scrapers/web_document.py` | `tests/test_web_document.py` |
 | `minitools/processors/vlm_parse_repairer.py` | `tests/test_vlm_parse_repairer.py` |
 | `minitools/processors/full_text_translator.py` | `tests/test_full_text_translator.py` |
