@@ -415,9 +415,12 @@ def _build_new_page_properties(
     japanese_summary: str | None = None,
 ) -> dict:
     """新規ページ用のNotionプロパティを構築（メタデータがあればリッチに）"""
-    url_normalized = url.replace("http://", "https://").replace(
-        "export.arxiv.org", "arxiv.org"
-    )
+    # 正規化は arXiv のみ（他サイトは find_page_by_url の照合と一致させるため原文のまま）
+    url_normalized = url
+    if ArxivScraper().validate_arxiv_url(url):
+        url_normalized = url.replace("http://", "https://").replace(
+            "export.arxiv.org", "arxiv.org"
+        )
 
     if metadata:
         properties: dict = {
