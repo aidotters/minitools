@@ -1,6 +1,7 @@
 # AGENTS.md
 
-This file provides guidance to Codex and other AI coding agents when working with code in this repository.
+This file provides guidance to AI coding agents (Codex, Claude Code, etc.) when working with code in this repository.
+It is the single source of truth for project context; `CLAUDE.md` only imports this file.
 
 ## Common Development Commands
 
@@ -52,10 +53,27 @@ uv run medium --translate --notion    # Auto-translate articles with claps >= th
 uv run medium --translate --cdp --notion  # CDPモード（Cloudflare回避、推奨）
 
 # Medium Full-Text Translation (Playwright + LLM)
+# Notion Medium DB に該当ページが無い URL の場合は新規ページを作成して翻訳本文を保存
 uv run medium-translate --url "https://medium.com/..."
 uv run medium-translate --url "https://..." --url "https://..."  # Multiple articles
 uv run medium-translate --url "https://..." --provider openai    # Use OpenAI
 uv run medium-translate --url "https://..." --dry-run            # Preview only
+uv run medium-translate --url "https://..." --debug              # Dump fetched HTML to outputs/medium_translate_debug/
+
+# Medium Scrape (English Markdown to stdout, no translation)
+# 翻訳・要約・Notion保存は一切行わず、英語原文 Markdown を stdout に出力（llm-wiki 連携用）
+uv run scrape-medium --url "https://medium.com/..."              # Standalone Playwright (Cloudflare に弱い)
+uv run scrape-medium --url "https://medium.com/..." --cdp        # CDP モード（ログイン済み Chrome 利用、推奨）
+uv run scrape-medium --url "https://medium.com/..." --emit-meta  # 先頭に YAML フロントマター（published_at/last_modified）を前置
+# --emit-meta: JSON-LD（datePublished/dateModified）を正本に元日付メタを抽出し、本文の前に
+#   ---\npublished_at: YYYY-MM-DD\nlast_modified: YYYY-MM-DD\npublished_at_source: html-meta\n
+#   last_modified_source: html-meta\n--- を出力（取得不能フィールドは unknown）。既定 off=本文のみ（後方互換）。
+
+# Discover Medium articles from Notion (JSON to stdout)
+# Notion Medium DB から直近 N 日分の記事を JSON 配列で stdout 出力（llm-wiki 連携用）
+uv run discover-notion-medium                                    # 直近7日分（デフォルト）
+uv run discover-notion-medium --days 3                           # 直近3日分
+uv run discover-notion-medium --days 7 --database-id "abc123"    # DB ID 明示指定
 
 # ArXiv Paper Full-Text Translation (PDF + marker-pdf + LLM)
 uv run arxiv-translate --url "https://arxiv.org/abs/2401.12345"  # Full pipeline (with VLM repair)
@@ -103,11 +121,31 @@ uv run google-alerts-translate --url "https://..." --dry-run            # Previe
 # YouTube video summarization (requires whisper extra)
 uv run youtube --url "https://youtube.com/watch?v=..."
 
+# YouTube Mail Digest（特定送信元メール内のYouTube動画を要約しSlack配信+Notion保存）
+# settings.yaml の youtube_mail_digest.profiles に「送信元→保存先」を複数定義して実行
+# 字幕優先（無ければWhisperフォールバック）。重複は per-profile で processed.json に記録しスキップ
+uv run youtube-mail-digest                          # 全プロファイルを直近24時間分処理
+uv run youtube-mail-digest --hours 24               # 取得期間を指定
+uv run youtube-mail-digest --date 2026-06-07        # 特定日のメールを処理
+uv run youtube-mail-digest --profile ai-newsletter  # 特定プロファイルのみ
+uv run youtube-mail-digest --profile x --no-notion  # Slackのみ（Notion保存なし）
+uv run youtube-mail-digest --profile x --no-slack   # Notionのみ（Slack配信なし）
+uv run youtube-mail-digest --test                   # 各プロファイル先頭1動画のみ
+uv run youtube-mail-digest --dry-run                # Slack/Notion送信なしのプレビュー
+uv run youtube-mail-digest --provider openai        # 要約LLMプロバイダを指定
+
 # Google Alert Weekly Digest (summarizes top articles from Notion)
 # Default provider: openai (for fast batch scoring)
 uv run google-alert-weekly-digest --days 7 --top 20
 uv run google-alert-weekly-digest --dry-run  # Preview without sending to Slack
 uv run google-alert-weekly-digest --provider ollama  # Use local Ollama instead
+
+# Google Alert Daily Digest (Top10 / past 24h, scheduled via launchd at 19:00 JST)
+# Default provider: openai
+uv run google-alert-daily-digest --hours 24 --top 10
+uv run google-alert-daily-digest --dry-run            # Preview without sending to Slack
+uv run google-alert-daily-digest --quiet              # Skip Slack send when 0 articles
+uv run google-alert-daily-digest --provider gemini    # Use Gemini instead
 
 # ArXiv Weekly Digest (LLM scoring with optional Tavily trend context)
 # Default provider: openai (for fast batch scoring)
@@ -145,7 +183,13 @@ This is a content aggregation and processing system that collects articles from 
   - Uses email preview text by default (faster, avoids Cloudflare blocking)
   - Optionally uses Jina AI Reader (`r.jina.ai`) with `--use-jina` flag
 - **GoogleAlertsCollector**: Processes Google Alerts emails via Gmail API
-- **YouTubeCollector**: Downloads and transcribes YouTube videos using MLX Whisper
+- **YouTubeCollector**: Downloads and transcribes YouTube videos
+  - `fetch_subtitles()`: yt-dlp で字幕（手動→自動、ja→en 優先）を取得し VTT をプレーンテキスト化（`parse_subtitle_to_text`）。取得失敗・字幕なしは None
+  - `get_transcript()`: 字幕優先→無ければ既存 `process_video`（音声DL + MLX Whisper）にフォールバック。`source` を `"subtitle"`/`"whisper"` で返す。**ライブ配信中/配信予定（`live_status` が `is_live`/`is_upcoming`）はライブエッジ付近の断片しか取得できず内容を反映しないため None を返してスキップ**（呼び出し側は processed に記録しないため、VOD化後の次回実行で再取得される）
+- **YouTubeEmailCollector**: 特定送信元(from)の Gmail を取得し本文 HTML から YouTube 動画 URL を抽出（`youtube-mail-digest` 用）
+  - Gmail 認証・本文抽出は `GoogleAlertsCollector` のパターンを流用し、`from:` をパラメータ化（token.pickle 共有、`gmail.readonly`）
+  - `extract_youtube_urls()` / `normalize_youtube_url()` / `extract_video_id()`: watch / youtu.be / shorts / embed を正規化し video_id で dedup（純粋関数、単体テスト済み）
+  - `_decode_redirect_urls()`: WordPress digest メール等で実 URL が `?action=user_content_redirect&...&encoded_url=<base64>` の `encoded_url` に base64 で内包されるケースに対応し、デコードして候補 URL に展開（padding 補正＋標準/urlsafe フォールバック）。`extract_youtube_urls` から呼ばれる
 - **XTrendCollector**: Fetches trending topics, keyword search results, and user timelines from X (Twitter) via TwitterAPI.io
   - 3 sources: Trends (Japan/Global WOEID), keyword search, user timeline monitoring
   - `collect_all()`: Parallel collection of all 3 sources via `asyncio.gather`
@@ -192,9 +236,11 @@ This is a content aggregation and processing system that collects articles from 
 #### Processors (`minitools/processors/`)
 - **Translator**: Translates content to Japanese using Ollama models
 - **Summarizer**: Creates concise summaries using Ollama models
-- **WeeklyDigestProcessor**: Generates weekly AI digest with importance scoring
+- **DigestProcessor** (alias: `WeeklyDigestProcessor`): Generates AI digests (weekly/daily) with importance scoring
   - **Batch scoring**: Processes 20 articles per LLM call for 8x speedup
-  - Default provider: OpenAI (configurable via `defaults.weekly_digest.provider`)
+  - **`summarize_all_articles`**: Generates 4–6 sentence Japanese overview of all articles (single-shot ≤ chunk_size, 2-stage map-reduce above) — used for Daily Digest「今日のまとめ」
+  - Default provider: OpenAI (configurable via `defaults.weekly_digest.provider` / `defaults.daily_digest.provider`)
+  - Used by both `google-alert-weekly-digest` and `google-alert-daily-digest`
 - **ArxivWeeklyProcessor**: ArXiv paper ranking via LLM importance scoring
   - **Batch scoring**: Processes 20 papers per LLM call for 8x speedup
   - Optional Tavily trend research for context-aware scoring (`--no-trends` to skip)
@@ -230,6 +276,9 @@ This is a content aggregation and processing system that collects articles from 
   - Keywords: Tweet summarization per keyword
   - Timelines: LLM filtering for AI-related tweets → summarization per account
   - `process_all()`: Unified processing of all 3 sources
+- **YouTubeSummarizer**: 文字起こしから日本語の要約文＋ポイント箇条書き（3〜7個）を生成（`youtube-mail-digest` 用）
+  - `get_llm_client` 経由で provider 切替（デフォルト Gemini、`defaults.youtube_mail_digest.{provider,model,thinking_level}`）
+  - 1コールで要約＋ポイントを生成し `_parse_summary_response` でパース、指数バックオフリトライ（`Summary(text, points)` を返す）
 - **DuplicateDetector**: Detects similar articles using embeddings
 - All use async processing for parallel execution (3-5x performance improvement)
 
@@ -239,14 +288,17 @@ This is a content aggregation and processing system that collects articles from 
   - `find_page_by_url()`: Find existing page by URL, returns `PageInfo(page_id, is_translated)` to skip already-translated pages
   - `append_blocks()`: Append translated blocks to existing pages (100-block batch)
   - `update_page_properties()`: Update existing page properties (e.g., Translated checkbox)
+  - `create_child_page(parent_page_id, title, blocks)`: 親ページ配下に子ページを作成（`parent={"page_id": ...}`、`youtube-mail-digest` 用）。**注意:** 子ページは title 以外の properties を設定できない（DB プロパティを渡すと 400）。メタ情報は全て本文ブロックとして書く
   - Medium properties: Title, Japanese Title, URL, Author, Date, Summary, Claps (number), Translated (checkbox)
 - **NotionBlockBuilder**: Converts Markdown to Notion API block format (headings, code, images, lists, quotes)
-- **SlackPublisher**: Sends formatted notifications to Slack webhooks (including weekly digest format)
+- **SlackPublisher**: Sends formatted notifications to Slack webhooks (including weekly/daily digest format)
   - Medium Daily Digest includes claps count (👏) per article
+  - Google Alerts Daily Digest: `format_daily_digest(date, articles, daily_summary="")` で「📝 今日のまとめ」+「🏆 今日の重要記事 Top N」の2セクション構成
   - X Trend Digest: セクション分割送信で省略なし
     - `format_x_trend_digest_sections(ProcessResult)` → `list[str]`（セクションごとのメッセージリスト）
     - `format_x_trend_digest(ProcessResult)` → `str`（後方互換ラッパー、内部で sections を結合）
     - `send_messages(messages)`: 複数メッセージを順番に送信（0.5秒間隔でレート制限回避）
+  - YouTube Mail Digest: `format_youtube_digest(videos, title, date, max_message_length)` → `list[str]`（動画ごとにタイトル・チャンネル・URL・要約・ポイントを整形し、長文はセクション分割して `send_messages` で送信）
 
 ### Key Design Patterns
 

@@ -127,7 +127,8 @@ minitools/
 ├── docker-entrypoint.sh           # Dockerエントリーポイント
 ├── Makefile                       # ビルド自動化
 ├── README.md                      # プロジェクト説明
-├── CLAUDE.md                      # 開発ガイダンス
+├── AGENTS.md                      # AIエージェント共通の開発ガイダンス（正）
+├── CLAUDE.md                      # Claude Code 用（@AGENTS.md を読み込み + 固有補足）
 ├── .python-version                # Pythonバージョン固定
 ├── uv.lock                        # 依存関係ロック
 └── .gitignore                     # Git除外設定
