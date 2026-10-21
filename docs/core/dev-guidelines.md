@@ -770,5 +770,6 @@ async def generate_from_images(
 | ソースモジュール | テストファイル |
 |------------------|---------------|
 | `minitools/scrapers/arxiv_scraper.py` | `tests/test_arxiv_scraper.py` |
+| `minitools/scrapers/web_document.py` | `tests/test_web_document.py` |
 | `minitools/processors/vlm_parse_repairer.py` | `tests/test_vlm_parse_repairer.py` |
 | `minitools/processors/full_text_translator.py` | `tests/test_full_text_translator.py` |

@@ -37,6 +37,7 @@ flowchart TB
         MS["MediumScraper"]
         MDC["MarkdownConverter"]
         AS["ArxivScraper"]
+        WDC["WebDocumentConverter"]
         JR["JinaReader"]
     end
 
@@ -161,6 +162,7 @@ flowchart TB
         MS["MediumScraper"]
         MDC["MarkdownConverter"]
         AS["ArxivScraper"]
+        WDC["WebDocumentConverter"]
         JR["JinaReader"]
     end
 
@@ -212,6 +214,7 @@ flowchart TB
     medium_translate -.->|"title/summary translation"| LLM["LLM Client (get_llm_client)"]
 
     arxiv_translate --> AS
+    AS -->|"HTML"| WDC
     arxiv_translate --> VPR
     arxiv_translate --> FTT
     arxiv_translate --> NBB

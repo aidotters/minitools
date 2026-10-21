@@ -215,6 +215,7 @@ sequenceDiagram
     participant CLI as scripts/arxiv_translate.py
     participant AS as ArxivScraper
     participant Marker as marker-pdf
+    participant WDC as WebDocumentConverter
     participant VPR as VlmParseRepairer
     participant VLM as Multimodal LLM
     participant FTT as FullTextTranslator
@@ -223,19 +224,29 @@ sequenceDiagram
     participant NP as NotionPublisher
     participant Notion
 
-    User->>CLI: arxiv-translate --url "https://arxiv.org/abs/..."
+    User->>CLI: arxiv-translate --url "https://arxiv.org/abs/... | PDF URL | Webページ URL"
 
     Note over CLI: Step 1: parse
     CLI->>AS: __aenter__()
-    CLI->>AS: fetch_pdf(url)
-    AS-->>CLI: pdf_bytes
-    CLI->>AS: parse_to_markdown(pdf_bytes)
-    AS->>Marker: convert(pdf)
-    Marker-->>AS: markdown + images
-    AS-->>CLI: (raw.md, images)
+    CLI->>AS: fetch_and_parse(url)
+    alt arXiv URL
+        AS->>AS: fetch_pdf(url) + fetch_metadata(arxiv_id)
+        AS->>Marker: convert(pdf)
+        Marker-->>AS: markdown + images
+    else 一般 PDF（%PDF- / content-type）
+        AS->>AS: fetch_document(url)
+        AS->>Marker: convert(pdf)
+        Marker-->>AS: markdown + images
+        AS->>AS: extract_pdf_metadata()
+    else HTML
+        AS->>AS: fetch_document(url)
+        AS->>WDC: convert(html, base_url)
+        WDC-->>AS: WebDocument（画像は外部URL・pdf_bytes なし）
+    end
+    AS-->>CLI: PaperContent(markdown, images, metadata, pdf_bytes)
     CLI->>CLI: write raw.md, *.jpeg, metadata.json
 
-    alt VLM修復有効
+    alt VLM修復有効 かつ PDF あり（HTML はスキップ）
         CLI->>VPR: repair(raw_markdown)
         VPR->>VPR: ParseErrorDetector.detect()
         loop 各欠陥（Semaphore=2）
@@ -282,12 +293,12 @@ sequenceDiagram
 
 #### 出力ディレクトリ構造
 
-`arxiv-translate` は論文ごとに `outputs/arxiv_translate/{safe_id}/` フォルダを作成する。`safe_id` は arXiv ID (例: `2401.12345`) のドットをアンダースコアに置換したもの。
+`arxiv-translate` は論文ごとに `outputs/arxiv_translate/{safe_id}/` フォルダを作成する。`safe_id` は `ArxivScraper.document_id()` で決まり、arXiv URL は arXiv ID（例: `2401.12345`、旧形式の `/` は `_` に置換）、それ以外の PDF / Webページは `{host}_{slug}_{URLのSHA-1先頭8桁}`（例: `cdn.openai.com_language_models_are_unsupervised_multitask_learners_ed680185`）。Webページは PDF・画像ファイルを持たない（画像は元サイトの URL を参照）。
 
 ```
 outputs/arxiv_translate/{safe_id}/
 ├── {safe_id}.pdf           # PDF（識別性のため safe_id 維持）
-├── metadata.json           # PaperMetadata（arxiv_id, title, authors, published, abstract）
+├── metadata.json           # PaperMetadata（arxiv_id, title, authors, published, abstract, source_type）
 ├── raw.md                  # marker-pdf 出力（VLM 修復前）
 ├── repaired.md             # VLM 修復後（applied > 0 のときのみ生成）
 ├── translated.md           # 日本語訳（最終出力）
@@ -1003,6 +1014,7 @@ classDiagram
         +List~str~ authors
         +str published
         +str abstract
+        +str source_type
     }
 
     class PaperContent {
@@ -1018,14 +1030,35 @@ classDiagram
         +__aenter__()
         +__aexit__()
         +validate_arxiv_url(url)
+        +validate_url(url)$
+        +document_id(url)$
         +extract_arxiv_id(url)$
         +fetch_pdf(url) bytes
+        +fetch_document(url) Response
+        +extract_pdf_metadata(pdf_data, markdown, doc_id)$ PaperMetadata
         +parse_to_markdown(pdf_data) tuple~str, List~PaperImage~~
         +fetch_metadata(arxiv_id) PaperMetadata
         +fetch_and_parse(url) PaperContent
         -_convert_to_pdf_url(arxiv_url)
         -_image_to_bytes(image_obj, filename)$
+        -_fetch_and_parse_generic(url)
     }
+
+    class WebDocumentConverter {
+        +convert(html, base_url) WebDocument
+    }
+
+    class WebDocument {
+        <<dataclass>>
+        +str markdown
+        +str title
+        +List~str~ authors
+        +str published
+        +str abstract
+    }
+
+    ArxivScraper ..> WebDocumentConverter : uses (HTML)
+    WebDocumentConverter ..> WebDocument : creates
 
     ArxivScraper ..> PaperContent : creates
     ArxivScraper ..> PaperImage : creates
