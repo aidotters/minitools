@@ -283,6 +283,12 @@
 - ruff による静的解析チェックを追加 (bf4f777)
 
 ### Fixed
+- **launchd ジョブがスリープ復帰直後に DNS 未解決で失敗する問題を修正** (2026-10-09)
+  - Mac のスリープ中に実行時刻を迎えると復帰直後に実行され、ネットワーク復帰前に外部 API・Slack 送信が失敗して配信が欠落していた（arxiv で確認）
+  - 新規 `minitools/utils/network.py` の `wait_for_network()` で、処理開始前に名前解決が通るまで最大180秒待機（5秒間隔）。タイムアウト時は exit 1 で中止し、「0件」通知を送らない
+  - 適用先: `arxiv` / `google-alerts` / `medium` / `x-trend` / `google-alert-daily-digest` / `youtube-mail-digest`（launchd で定期実行している全 CLI）
+  - `ArxivCollector.search()` に接続エラー時の指数バックオフリトライ（5s/10s/20s, 最大3回）を追加
+  - テスト: `tests/test_network_wait.py` を新規追加
 - **XTrendCollector APIレスポンスパーシング修正**: TwitterAPI.ioのレスポンス構造がネスト形式（`{"status": "success", "data": {"tweets": [...]}}`）であることに対応
   - `_parse_tweets()`: `data.data.tweets` のネスト構造に対応（従来は `data.tweets` のフラット構造のみ対応）
   - `get_trends()`: 同様にネスト構造対応を追加

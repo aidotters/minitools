@@ -2,6 +2,8 @@
 ArXiv paper collector module.
 """
 
+import time
+
 import aiohttp
 from typing import List, Dict, Optional
 from datetime import datetime
@@ -58,7 +60,7 @@ class ArxivCollector:
         }
 
         try:
-            response = requests.get(self.base_url, params=params)
+            response = self._get_with_retry(params)
             response.raise_for_status()
 
             feed = feedparser.parse(response.text)
@@ -94,6 +96,24 @@ class ArxivCollector:
         except Exception as e:
             logger.error(f"Error searching ArXiv: {e}")
             return []
+
+    def _get_with_retry(
+        self, params: dict, max_retries: int = 3, base_delay: float = 5.0
+    ) -> requests.Response:
+        """接続エラー時に指数バックオフ（5s/10s/20s）で再試行して GET する"""
+        for attempt in range(max_retries + 1):
+            try:
+                return requests.get(self.base_url, params=params, timeout=60)
+            except (requests.ConnectionError, requests.Timeout) as e:
+                if attempt == max_retries:
+                    raise
+                delay = base_delay * (2**attempt)
+                logger.warning(
+                    f"ArXiv API への接続に失敗しました。{delay:.0f}秒後に再試行します"
+                    f"（{attempt + 1}/{max_retries}）: {e}"
+                )
+                time.sleep(delay)
+        raise RuntimeError("unreachable")
 
     async def fetch_paper_details_async(self, paper_url: str) -> Optional[str]:
         """

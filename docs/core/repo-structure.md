@@ -232,6 +232,7 @@ LLMを使用してコンテンツを処理するモジュール群。
 | `config.py` | 設定ファイル管理 | シングルトン |
 | `processed_store.py` | 処理済み動画のper-profile記録（youtube-mail-digest） | JSON永続化 |
 | `logger.py` | カラー対応ログ出力 | ColoredFormatter |
+| `network.py` | 名前解決が通るまで待機（launchd のスリープ復帰直後対策） | ポーリング |
 
 ### scripts/ (CLIエントリーポイント)
 

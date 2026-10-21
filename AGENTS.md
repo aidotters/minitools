@@ -317,6 +317,7 @@ This is a content aggregation and processing system that collects articles from 
 4. **Error Handling**: Retry logic with exponential backoff for API calls
    - NotionPublisher: `_retry_api_call()` detects rate limit errors and retries with 2s/4s/8s backoff (max 3 retries)
    - All Notion API methods (`check_existing`, `create_page`, `find_page_by_url`, `update_page_properties`, `append_blocks`) use this common retry logic
+   - launchd 定期ジョブ（`arxiv` / `google-alerts` / `medium` / `x-trend` / `google-alert-daily-digest` / `youtube-mail-digest`）は処理開始前に `minitools/utils/network.py` の `wait_for_network()` で名前解決を最大180秒待つ（スリープ復帰直後の DNS 未解決対策）。タイムアウト時は exit 1 で中止し、誤った「0件」通知を送らない
 
 ### External Dependencies
 
