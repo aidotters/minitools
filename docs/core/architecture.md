@@ -353,8 +353,10 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    A["ArXiv URL"] --> B["ArxivScraper\n(httpx PDFダウンロード)"]
+    A["ArXiv / PDF / Web URL"] --> B["ArxivScraper\n(httpx 取得・種類判定)"]
     B --> C["PDFバイト列"]
+    B -->|HTML| W["WebDocumentConverter\n(HTML→Markdown)"]
+    W --> E
     C --> D["marker-pdf\n(PDF→Markdown)"]
     D --> E["raw.md + 画像"]
     E --> F["VlmParseRepairer\n(壊れた表/孤立図の修復)"]
@@ -365,6 +367,8 @@ flowchart LR
     J --> K["NotionPublisher\n(File Upload + ページ作成)"]
     K --> L["Notion Database"]
 ```
+
+arXiv 以外の URL も受け付ける。`ArxivScraper.fetch_and_parse()` は arXiv ホストなら従来どおり arXiv PDF + arXiv API、それ以外は1回の GET のレスポンスで判定し、PDF（`%PDF-` / content-type）は marker-pdf（メタデータは PDF 情報辞書と Markdown 先頭見出し）、HTML は `WebDocumentConverter` で Markdown 化する。HTML は PDF が無いため VLM 修復はスキップされ、画像は元サイトの絶対 URL を外部画像ブロックとして参照する。出力フォルダ名は `ArxivScraper.document_id()`（arXiv は arXiv ID、それ以外は `{host}_{slug}_{hash8}`）。
 
 3 ステップに分離されており、各ステップは個別に再実行できる:
 1. **parse** — PDFダウンロード→marker-pdfでMarkdown化→VLMでパース欠陥を修復

@@ -262,7 +262,7 @@ class TestFetchAndParse:
         scraper = ArxivScraper()
         scraper._client = AsyncMock()
 
-        result = await scraper.fetch_and_parse("https://example.com/paper")
+        result = await scraper.fetch_and_parse("not-a-url")
         assert result is None
 
     @pytest.mark.asyncio
@@ -368,3 +368,174 @@ class TestDataClasses:
         )
         assert content.metadata is not None
         assert len(content.images) == 1
+
+
+class TestDocumentId:
+    """出力フォルダ名に使う文書IDの導出"""
+
+    def test_arxiv_url_keeps_existing_id(self):
+        assert ArxivScraper.document_id("https://arxiv.org/abs/2401.12345") == (
+            "2401.12345"
+        )
+
+    def test_arxiv_old_format_id(self):
+        assert ArxivScraper.document_id("https://arxiv.org/abs/cs.AI/0301001") == (
+            "cs.AI_0301001"
+        )
+
+    def test_generic_pdf_url(self):
+        doc_id = ArxivScraper.document_id(
+            "https://cdn.openai.com/better-language-models/"
+            "language_models_are_unsupervised_multitask_learners.pdf"
+        )
+        assert doc_id.startswith(
+            "cdn.openai.com_language_models_are_unsupervised_multitask_learners_"
+        )
+        assert len(doc_id.rsplit("_", 1)[1]) == 8
+
+    def test_different_urls_with_same_slug_differ(self):
+        a = ArxivScraper.document_id("https://example.com/a/index.html")
+        b = ArxivScraper.document_id("https://example.com/b/index.html")
+        assert a != b
+        assert a.startswith("example.com_index_")
+
+    def test_strips_www(self):
+        doc_id = ArxivScraper.document_id("https://www.example.com/post")
+        assert doc_id.startswith("example.com_post_")
+
+
+class TestValidateUrl:
+    """一般 URL バリデーション"""
+
+    def test_https(self):
+        assert ArxivScraper.validate_url("https://d2l.ai/chapter/page.html")
+
+    def test_http(self):
+        assert ArxivScraper.validate_url("http://example.com/paper.pdf")
+
+    def test_invalid(self):
+        assert not ArxivScraper.validate_url("not-a-url")
+        assert not ArxivScraper.validate_url("ftp://example.com/file.pdf")
+        assert not ArxivScraper.validate_url("")
+
+
+class TestFetchAndParseGeneric:
+    """arXiv 以外の URL（一般 PDF / HTML）の取得と振り分け"""
+
+    @staticmethod
+    def _response(content: bytes, content_type: str, url: str) -> MagicMock:
+        response = MagicMock()
+        response.content = content
+        response.text = content.decode("utf-8", errors="ignore")
+        response.headers = {"content-type": content_type}
+        response.url = url
+        response.raise_for_status = MagicMock()
+        return response
+
+    @pytest.mark.asyncio
+    async def test_pdf_by_magic_bytes(self):
+        """content-type が不正確でも %PDF- で PDF と判定する"""
+        scraper = ArxivScraper()
+        url = "https://example.com/files/paper.pdf"
+        scraper._client = AsyncMock()
+        scraper._client.get = AsyncMock(
+            return_value=self._response(
+                b"%PDF-1.5 dummy", "application/octet-stream", url
+            )
+        )
+        with patch.object(
+            scraper,
+            "parse_to_markdown",
+            return_value=("# Great Paper\n\n## Abstract\n\nWe study X.\n", []),
+        ):
+            result = await scraper.fetch_and_parse(url)
+
+        assert result is not None
+        assert result.pdf_bytes == b"%PDF-1.5 dummy"
+        assert result.metadata is not None
+        assert result.metadata.source_type == "pdf"
+        assert result.metadata.title == "Great Paper"
+        assert result.metadata.abstract == "We study X."
+        assert result.metadata.arxiv_id.startswith("example.com_paper_")
+        # arXiv API は呼ばない（GET は本体の1回のみ）
+        assert scraper._client.get.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_html_page(self):
+        scraper = ArxivScraper()
+        url = "https://docs.example.com/guide/attention.html"
+        html = (
+            b"<html><head><title>Attention | Example Docs</title>"
+            b'<meta name="description" content="About attention."></head>'
+            b'<body><nav>menu</nav><div role="main"><h1>Attention</h1>'
+            b'<p>See <img src="../img/fig.png" alt="fig"></p></div></body></html>'
+        )
+        scraper._client = AsyncMock()
+        scraper._client.get = AsyncMock(
+            return_value=self._response(html, "text/html; charset=utf-8", url)
+        )
+
+        result = await scraper.fetch_and_parse(url)
+
+        assert result is not None
+        assert result.pdf_bytes is None
+        assert result.metadata is not None
+        assert result.metadata.source_type == "html"
+        assert result.metadata.title == "Attention"
+        assert result.metadata.abstract == "About attention."
+        assert "menu" not in result.markdown
+        assert "https://docs.example.com/img/fig.png" in result.markdown
+
+    @pytest.mark.asyncio
+    async def test_unsupported_content_type(self):
+        scraper = ArxivScraper()
+        url = "https://example.com/data.json"
+        scraper._client = AsyncMock()
+        scraper._client.get = AsyncMock(
+            return_value=self._response(b'{"a": 1}', "application/json", url)
+        )
+        assert await scraper.fetch_and_parse(url) is None
+
+
+class TestExtractPdfMetadata:
+    def test_falls_back_to_markdown_heading(self):
+        metadata = ArxivScraper.extract_pdf_metadata(
+            b"not a real pdf", "# Language Models\n\nBody", "doc_id"
+        )
+        assert metadata.title == "Language Models"
+        assert metadata.source_type == "pdf"
+
+    def test_falls_back_to_doc_id(self):
+        metadata = ArxivScraper.extract_pdf_metadata(b"x", "no heading", "doc_id")
+        assert metadata.title == "doc_id"
+
+
+class TestExtractPdfMetadataAuthors:
+    def test_authors_footnote_marks_removed(self):
+        with patch("fitz.open") as mock_open:
+            doc = MagicMock()
+            doc.metadata = {
+                "title": "Microsoft Word - paper.docx",
+                "author": "Alec Radford*, Jeffrey Wu*; Dario Amodei**",
+                "creationDate": "D:20190214120000Z",
+            }
+            mock_open.return_value.__enter__.return_value = doc
+            metadata = ArxivScraper.extract_pdf_metadata(
+                b"%PDF-", "# Real Title\n", "doc_id"
+            )
+        assert metadata.title == "Real Title"
+        assert metadata.authors == ["Alec Radford", "Jeffrey Wu", "Dario Amodei"]
+        assert metadata.published == "2019-02-14"
+
+
+class TestPaperMetadataCompat:
+    def test_legacy_metadata_json_without_source_type(self):
+        """source_type が無い既存の metadata.json も読み込める"""
+        metadata = PaperMetadata(
+            arxiv_id="2401.12345",
+            title="T",
+            authors=[],
+            published="2024-01-01",
+            abstract="",
+        )
+        assert metadata.source_type == "arxiv"

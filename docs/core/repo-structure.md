@@ -35,7 +35,8 @@ minitools/
 │   ├── scrapers/                   # スクレイピングレイヤー
 │   │   ├── __init__.py
 │   │   ├── medium_scraper.py      # Playwright Medium記事取得（CDP/スタンドアロン）
-│   │   ├── arxiv_scraper.py       # ArXiv PDFダウンロード + marker-pdf変換
+│   │   ├── arxiv_scraper.py       # ArXiv PDFダウンロード + marker-pdf変換（一般PDF/HTMLも振り分け）
+│   │   ├── web_document.py        # Webページ HTML→Markdown 変換（数式・コード保持）
 │   │   ├── jina_reader.py         # Jina AI Reader経由のMarkdown取得（Google Alerts用）
 │   │   └── markdown_converter.py  # HTML→Markdown変換
 │   ├── processors/                 # コンテンツ処理レイヤー
@@ -93,7 +94,8 @@ minitools/
 │   ├── conftest.py               # テスト共通フィクスチャ
 │   ├── test_arxiv_weekly.py      # ArXiv週次ダイジェストテスト
 │   ├── test_duplicate_detector.py # 重複検出テスト
-│   ├── test_arxiv_scraper.py     # ArXiv PDFスクレイパーテスト
+│   ├── test_arxiv_scraper.py     # ArXiv PDFスクレイパーテスト（一般PDF/HTML振り分け含む）
+│   ├── test_web_document.py      # WebDocumentConverter テスト
 │   ├── test_full_text_translator.py # 全文翻訳テスト
 │   ├── test_google_alerts_translate.py # Google Alerts全文翻訳テスト
 │   ├── test_hf_papers.py         # Hugging Face Papersリサーチテスト
@@ -190,7 +192,8 @@ Playwrightを使用して外部サイトからコンテンツを取得し、構�
 |-----------|------|------------|
 | `medium_scraper.py` | Playwright経由でMedium記事の全文HTMLを取得 | Playwright (CDP/スタンドアロン) |
 | `markdown_converter.py` | Medium記事HTMLを構造化Markdownに変換 | BeautifulSoup4 |
-| `arxiv_scraper.py` | ArXiv PDFをダウンロードしmarker-pdfでMarkdownに変換 | httpx, marker-pdf, feedparser |
+| `arxiv_scraper.py` | ArXiv PDFをダウンロードしmarker-pdfでMarkdownに変換。非 arXiv の一般PDF/HTMLも受け付ける | httpx, marker-pdf, feedparser, PyMuPDF |
+| `web_document.py` | 技術系Webページの HTML を翻訳用 Markdown に変換（`WebDocumentConverter`、文書ID導出） | beautifulsoup4, markdownify |
 | `jina_reader.py` | `r.jina.ai/{url}` 経由で記事Markdownを取得（Google Alerts用） | aiohttp, Jina AI Reader |
 
 #### processors/ (コンテンツ処理)
@@ -238,7 +241,7 @@ LLMを使用してコンテンツを処理するモジュール群。
 | `arxiv.py` | `arxiv` | ArXiv論文の検索・翻訳・保存 |
 | `medium.py` | `medium` | Medium記事の収集・翻訳・保存 |
 | `medium_translate.py` | `medium-translate` | Medium記事の全文翻訳・Notion追記 |
-| `arxiv_translate.py` | `arxiv-translate` | ArXiv論文PDFの全文翻訳・Notion保存（parse / translate / upload / repair サブコマンド） |
+| `arxiv_translate.py` | `arxiv-translate` | ArXiv論文PDF・一般PDF・Webページの全文翻訳・Notion保存（parse / translate / upload / repair サブコマンド） |
 | `google_alerts.py` | `google-alerts` | Google Alertsの収集・翻訳・保存 |
 | `google_alerts_translate.py` | `google-alerts-translate` | Google Alerts記事の全文翻訳・Notion追記 |
 | `youtube.py` | `youtube` | YouTube動画の文字起こし・要約 |

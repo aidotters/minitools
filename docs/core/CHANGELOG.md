@@ -5,6 +5,13 @@
 ## [Unreleased]
 
 ### Added
+- **`arxiv-translate` が arXiv 以外の一般 PDF・Webページに対応** (2026-10-21)
+  - `ArxivScraper.fetch_and_parse()` が非 arXiv URL を1回の GET で取得し、`%PDF-` / content-type で PDF・HTML を判定。PDF は従来どおり marker-pdf + VLM 修復、メタデータは PDF 情報辞書 → Markdown 先頭見出し、Abstract 節から抽出
+  - 新規 `WebDocumentConverter`（`minitools/scrapers/web_document.py`）: 本文ルート抽出、ナビ/目次除去、アクティブなタブパネルのみ保持、数式（`\(..\)` / `\[..\]` / MathJax / KaTeX）を `$`/`$$` に変換、URL 絶対化、リンク画像の展開、ソース改行の畳み込み
+  - 出力フォルダ名を `ArxivScraper.document_id()` で導出（arXiv は従来の arXiv ID のまま、それ以外は `{host}_{slug}_{hash8}`）。従来は非 arXiv URL がすべて `unknown/` に集約されていた
+  - `PaperMetadata.source_type`（デフォルト `"arxiv"`、既存 metadata.json 互換）を追加。upload 時の arXiv API フォールバックは arXiv URL のみ
+  - 保存先は既存の ArXiv Notion DB。`markdownify` を直接依存に追加
+  - テスト: `tests/test_web_document.py` 新規、`tests/test_arxiv_scraper.py` に文書ID・振り分け・PDF メタデータのテストを追加
 - **`youtube-mail-digest` コマンド追加（特定メール内 YouTube 動画の要約配信）** (2026-06-07)
   - 特定送信元のメールに含まれる YouTube 動画を抽出し、字幕優先（無ければ Whisper フォールバック）で日本語の要約文＋ポイント箇条書きを生成、Slack 配信＋Notion 子ページ保存を行う新パイプライン
   - settings.yaml の `youtube_mail_digest.profiles` に「送信元 → 保存先」を複数定義（`from` / `notion_parent_page_id` / `slack_webhook_env` / `slack` / `notion`）。`--profile` で絞り込み、`--no-slack`/`--no-notion` で出力先を実行時上書き（Slackのみ／Notionのみ運用が可能）

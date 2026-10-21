@@ -1089,7 +1089,8 @@ markdown = converter.convert(html)
 ### ArxivScraper
 
 ArXiv論文のPDFをダウンロードし、marker-pdfでMarkdown形式に変換するクラス。
-Playwright非依存（httpxベース）で動作する。
+Playwright非依存（httpxベース）で動作する。arXiv 以外の一般 PDF URL・Webページ（HTML）も
+`fetch_and_parse()` で受け付ける（レスポンスで PDF / HTML を判定）。
 
 **ファイル:** `minitools/scrapers/arxiv_scraper.py`
 
@@ -1136,6 +1137,21 @@ class ArxivScraper:
         """ArXiv URL（abs/ or pdf/）の形式を検証"""
 
     @staticmethod
+    def validate_url(url: str) -> bool:
+        """http/https URL かを検証（arXiv 以外の入力用）"""
+
+    @classmethod
+    def document_id(cls, url: str) -> str:
+        """出力フォルダ名。arXiv は arXiv ID（/→_）、それ以外は {host}_{slug}_{hash8}"""
+
+    async def fetch_document(self, url: str) -> httpx.Response | None:
+        """任意 URL を GET（最大3回リトライ）"""
+
+    @staticmethod
+    def extract_pdf_metadata(pdf_data: bytes, markdown: str, doc_id: str) -> PaperMetadata:
+        """一般 PDF のメタデータ（PDF 情報辞書 → Markdown 先頭見出し、Abstract 節）"""
+
+    @staticmethod
     def extract_arxiv_id(url: str) -> str | None:
         """arXiv IDを抽出（例: 2401.12345 や 2401.12345v2）"""
 
@@ -1166,11 +1182,15 @@ class ArxivScraper:
     async def fetch_and_parse(self, url: str) -> PaperContent | None:
         """
         URL→PDFダウンロード→Markdown変換→メタデータ取得を一括実行
+        （非 arXiv: PDF は marker-pdf、HTML は WebDocumentConverter。HTML は pdf_bytes=None）
 
         Returns:
             PaperContent。いずれかのステップで失敗した場合はNone。
         """
 ```
+
+`PaperMetadata` には `source_type: str = "arxiv"`（`"arxiv"` / `"pdf"` / `"html"`）がある。
+非 arXiv 文書では `arxiv_id` に文書ID（`document_id()`）が入る（既存 metadata.json 互換のため名前は据え置き）。
 
 **使用例:**
 ```python
@@ -1182,6 +1202,43 @@ async with ArxivScraper() as scraper:
         for img in content.images:
             (output_dir / img.filename).write_bytes(img.data)
 ```
+
+---
+
+### WebDocumentConverter
+
+技術系 Web ページ（Sphinx 製の教科書・ドキュメント等）の HTML を翻訳用 Markdown に変換する。
+`ArxivScraper` が HTML レスポンスを受け取ったときに使う。
+
+**ファイル:** `minitools/scrapers/web_document.py`
+
+```python
+@dataclass
+class WebDocument:
+    markdown: str
+    title: str = ""
+    authors: list[str] = field(default_factory=list)
+    published: str = ""   # YYYY-MM-DD（不明時は空）
+    abstract: str = ""
+
+class WebDocumentConverter:
+    def convert(self, html: str, base_url: str) -> WebDocument:
+        """base_url は相対 URL 解決用（リダイレクト後の URL）"""
+
+def derive_document_id(url: str) -> str: ...            # {host}_{slug}_{sha1[:8]}
+def extract_title_from_markdown(markdown: str) -> str: ...  # 最初の # / ## 見出し
+def extract_abstract_from_markdown(markdown: str, max_chars: int = 3000) -> str: ...
+def clean_page_title(title: str) -> str: ...            # "Title — Site" / "Title | Site" の Site を除去
+```
+
+**変換ルール:**
+- 本文ルート: `[role=main]` → `article` → `div.document` → `div.body` → `main` → `body`
+- 除去: `script`/`style`/`nav`/`header`/`footer`/`aside`/`form`/`button`、`a.headerlink`、`.toctree-wrapper`、タブバー等
+- タブパネル（`.mdl-tabs__panel` / `[role=tabpanel]` / `.tab-pane`）は同じ親の中で `is-active`/`active` のもの（無ければ先頭）のみ残す
+- 数式: `.math` / `.katex` / `script[type^=math/tex]` / 地の文の `\(..\)` `\[..\]` をプレースホルダ化して markdownify のエスケープを回避し、`$..$` / `$$\n..\n$$` で復元
+- `img[src]` / `a[href]` を絶対 URL 化（`#` のみのリンクはテキスト化）、`<a><img></a>` は画像単体に、リンクの `title` 属性は除去
+- `pre` は祖先の `highlight-<lang>` / `language-<lang>` から言語を推定して fenced code 化
+- 段落内のソース改行は空白に畳む（NotionBlockBuilder は1行=1段落のため）
 
 ### JinaReader
 

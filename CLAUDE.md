@@ -76,6 +76,10 @@ uv run discover-notion-medium --days 7 --database-id "abc123"    # DB ID 明示�
 
 # ArXiv Paper Full-Text Translation (PDF + marker-pdf + LLM)
 uv run arxiv-translate --url "https://arxiv.org/abs/2401.12345"  # Full pipeline (with VLM repair)
+# arXiv 以外も可: 一般 PDF URL（marker-pdf + VLM修復）/ Webページ（HTML→Markdown、数式・コード保持）
+# 種類は取得レスポンスで判定（%PDF- / content-type）。保存先は同じ ArXiv Notion DB
+uv run arxiv-translate --url "https://cdn.openai.com/.../language_models_are_unsupervised_multitask_learners.pdf"
+uv run arxiv-translate --url "https://d2l.ai/chapter_attention-mechanisms-and-transformers/self-attention-and-positional-encoding.html"
 uv run arxiv-translate --url "https://..." --provider openai     # Use OpenAI
 uv run arxiv-translate --url "https://..." --dry-run             # Preview only
 uv run arxiv-translate --url "https://..." --no-vlm-repair       # Skip VLM parse repair
@@ -197,11 +201,19 @@ This is a content aggregation and processing system that collects articles from 
   - Standalone mode: Uses Playwright built-in Chromium
 - **MarkdownConverter**: Converts Medium article HTML to structured Markdown
 - **ArxivScraper**: Downloads ArXiv papers as PDF and converts to Markdown using marker-pdf
+  - **Non-arXiv URLs**: `fetch_and_parse()` dispatches on the fetched response — generic PDF (`%PDF-` / content-type) → marker-pdf (metadata from PDF info dict → first Markdown heading, abstract from "Abstract" section); HTML → `WebDocumentConverter`. `source_type` (`arxiv`/`pdf`/`html`) is stored in `PaperMetadata`
+  - `document_id(url)`: output folder name — arXiv ID for arXiv URLs (unchanged), otherwise `{host}_{slug}_{sha1[:8]}`
   - httpx-based PDF download with retry (no Playwright needed)
   - marker-pdf for PDF→Markdown conversion (sections, math, figures, tables)
   - Math preservation: inline `$...$` and block `$$...$$` (marker-pdf native support)
   - Image extraction from PDF (stored as PaperImage dataclass)
   - ArXiv API metadata fetching via feedparser (title, authors, date, abstract)
+- **WebDocumentConverter** (`web_document.py`): Converts technical web pages (e.g. Sphinx / d2l.ai) to translation-ready Markdown
+  - Content root: `[role=main]` → `article` → `div.document` → `div.body` → `main`; strips nav/header/footer/toctree/headerlink
+  - Tab panels (framework-specific code tabs): keeps only the active panel
+  - Math: `span.math` / `div.math` / MathJax script → placeholders before markdownify (avoids escaping), restored as `$...$` / `$$...$$`; Sphinx `\begin{split}` wrapper around `aligned` removed for KaTeX
+  - URLs absolutized (Notion rejects relative links), linked images unwrapped, link `title` removed, soft line breaks collapsed (1 line = 1 Notion paragraph)
+  - Images remain external URLs (no upload); no VLM repair for HTML (no PDF)
 - **JinaReader**: Async client for `https://r.jina.ai/{url}` Markdown extraction
   - Used by `google-alerts-translate` for English news / blog articles (non-Medium)
   - Exponential backoff retry (1s/2s/4s, max 3), Cloudflare/`error 403`/`just a moment` detection
