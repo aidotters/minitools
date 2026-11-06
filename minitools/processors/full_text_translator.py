@@ -20,6 +20,46 @@ DEFAULT_CHUNK_SIZE = 3000
 # 翻訳結果が元テキストに対してこの比率未満の場合、切れている可能性がある
 TRUNCATION_RATIO_THRESHOLD = 0.3
 
+# リトライしても回復しないエラー（課金・認証）。検出したら即座に失敗させる。
+# 429 RESOURCE_EXHAUSTED（レート制限）は一時的なので含めない。
+FATAL_ERROR_PATTERNS = (
+    re.compile(r"\b402\b"),  # Payment Required（Gemini Prepay のクレジット枯渇）
+    re.compile(r"PAYMENT_REQUIRED"),
+    re.compile(r"prepayment credits", re.IGNORECASE),
+    re.compile(r"API_KEY_INVALID"),
+    re.compile(r"API key not valid", re.IGNORECASE),
+    re.compile(r"PERMISSION_DENIED"),
+)
+
+
+class TranslationError(Exception):
+    """翻訳に失敗したことを表す例外
+
+    失敗時に原文（英語）をそのまま返すと、呼び出し側が翻訳済みとして
+    Notion に保存してしまうため、例外で明示的に通知する。
+
+    Attributes:
+        fatal: 課金・認証エラーなど、リトライしても回復しない失敗なら True
+    """
+
+    def __init__(self, message: str, *, fatal: bool = False):
+        super().__init__(message)
+        self.fatal = fatal
+
+
+def is_fatal_llm_error(error: BaseException) -> bool:
+    """例外（とその原因の連鎖）が課金・認証系の回復不能エラーかを判定する"""
+    current: Optional[BaseException] = error
+    seen = 0
+    while current is not None and seen < 5:
+        message = str(current)
+        if any(p.search(message) for p in FATAL_ERROR_PATTERNS):
+            return True
+        current = current.__cause__ or current.__context__
+        seen += 1
+    return False
+
+
 TRANSLATION_PROMPT = """あなたはプロの翻訳者です。以下のMarkdownテキストを日本語に翻訳してください。
 
 ## 翻訳ルール
@@ -112,6 +152,10 @@ class FullTextTranslator:
 
         Returns:
             翻訳済みのMarkdown文字列
+
+        Raises:
+            TranslationError: いずれかのチャンクの翻訳に失敗した場合。
+                部分的に英語が残った結果を返さないよう、記事全体を失敗とする。
         """
         if not markdown or not markdown.strip():
             return ""
@@ -352,8 +396,13 @@ class FullTextTranslator:
 
         Returns:
             翻訳済みテキスト
+
+        Raises:
+            TranslationError: 全リトライで翻訳できなかった場合、または
+                課金・認証エラーを検出した場合（``fatal=True``、リトライしない）
         """
         prompt = TRANSLATION_PROMPT.format(text=chunk)
+        last_error: Optional[BaseException] = None
 
         for attempt in range(self.max_retries):
             try:
@@ -386,6 +435,12 @@ class FullTextTranslator:
 
                 return translated
             except Exception as e:
+                if is_fatal_llm_error(e):
+                    logger.error(f"Non-retryable translation error: {e}")
+                    raise TranslationError(
+                        f"Non-retryable translation error: {e}", fatal=True
+                    ) from e
+                last_error = e
                 delay = 2**attempt  # 指数バックオフ: 1, 2, 4秒
                 logger.warning(
                     f"Translation error (attempt {attempt + 1}/{self.max_retries}): "
@@ -394,8 +449,9 @@ class FullTextTranslator:
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(delay)
 
-        logger.error(
-            f"Translation failed after {self.max_retries} attempts, "
-            f"returning original text"
-        )
-        return chunk
+        # 原文を返すと英語のまま「翻訳済み」として保存されるため、例外にする
+        logger.error(f"Translation failed after {self.max_retries} attempts")
+        raise TranslationError(
+            f"Translation failed after {self.max_retries} attempts: "
+            f"{last_error or 'empty translation result'}"
+        ) from last_error

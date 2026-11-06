@@ -1,8 +1,15 @@
 """Tests for FullTextTranslator."""
 
+import asyncio
+
 import pytest
 
-from minitools.processors.full_text_translator import FullTextTranslator
+from minitools.llm.base import LLMError
+from minitools.processors.full_text_translator import (
+    FullTextTranslator,
+    TranslationError,
+    is_fatal_llm_error,
+)
 from tests.conftest import MockLLMClient
 
 
@@ -203,18 +210,148 @@ class TestFullTextTranslatorTranslation:
         assert result == "全文翻訳"
 
     @pytest.mark.asyncio
-    async def test_all_retries_exhausted_returns_original(self):
-        """全リトライ失敗時に原文を返す"""
+    async def test_all_retries_exhausted_raises(self, monkeypatch):
+        """全リトライ失敗時は原文を返さず TranslationError を送出する
+
+        原文を返すと、呼び出し側が英語のまま「翻訳済み」として Notion に
+        保存してしまう（2026-11-06 の Gemini クレジット枯渇で実際に発生）。
+        """
+        monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+        call_count = 0
 
         class AlwaysFailLLM(MockLLMClient):
             async def chat(self, messages, model=None):
+                nonlocal call_count
+                call_count += 1
                 raise Exception("Persistent error")
 
-        mock_llm = AlwaysFailLLM()
-        translator = FullTextTranslator(llm_client=mock_llm, max_retries=2)
+        translator = FullTextTranslator(llm_client=AlwaysFailLLM(), max_retries=2)
 
-        result = await translator.translate("Original text")
-        assert result == "Original text"
+        with pytest.raises(TranslationError) as exc_info:
+            await translator.translate("Original text")
+        assert exc_info.value.fatal is False
+        assert "Persistent error" in str(exc_info.value)
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_empty_results_exhausted_raises(self, monkeypatch):
+        """全リトライで空の結果しか返らない場合も TranslationError"""
+        monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+        translator = FullTextTranslator(
+            llm_client=MockLLMClient(chat_response="   "), max_retries=2
+        )
+
+        with pytest.raises(TranslationError):
+            await translator.translate("Original text")
+
+    @pytest.mark.asyncio
+    async def test_payment_required_fails_fast_without_retry(self, monkeypatch):
+        """402（Prepay クレジット枯渇）はリトライせず即座に fatal で失敗する"""
+        monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+        call_count = 0
+
+        class PaymentRequiredLLM(MockLLMClient):
+            async def chat(self, messages, model=None):
+                nonlocal call_count
+                call_count += 1
+                raise LLMError(
+                    "LangChain Gemini API call failed: Error calling model "
+                    "'gemini-3.1-flash-lite' (RESOURCE_EXHAUSTED): 402 "
+                    "RESOURCE_EXHAUSTED. {'error': {'code': 402, 'message': "
+                    "'Your prepayment credits are depleted.'}}"
+                )
+
+        translator = FullTextTranslator(llm_client=PaymentRequiredLLM(), max_retries=3)
+
+        with pytest.raises(TranslationError) as exc_info:
+            await translator.translate("Original text")
+        assert exc_info.value.fatal is True
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_partial_chunk_failure_raises(self, monkeypatch):
+        """一部のチャンクだけ失敗しても、英語混じりの結果を返さず失敗にする"""
+        monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+        call_count = 0
+
+        class SecondChunkFailsLLM(MockLLMClient):
+            async def chat(self, messages, model=None):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return "最初のチャンクの翻訳"
+                raise Exception("Persistent error")
+
+        translator = FullTextTranslator(
+            llm_client=SecondChunkFailsLLM(), chunk_size=100, max_retries=2
+        )
+        md = "# Section 1\n\n" + "A" * 80 + "\n\n# Section 2\n\n" + "B" * 80
+
+        with pytest.raises(TranslationError):
+            await translator.translate(md)
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_429_is_retried(self, monkeypatch):
+        """429 RESOURCE_EXHAUSTED（レート制限）は一時的なのでリトライする"""
+        monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+        call_count = 0
+
+        class RateLimitedOnceLLM(MockLLMClient):
+            async def chat(self, messages, model=None):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    raise LLMError("429 RESOURCE_EXHAUSTED. Quota exceeded")
+                return "翻訳成功"
+
+        translator = FullTextTranslator(llm_client=RateLimitedOnceLLM(), max_retries=3)
+
+        assert await translator.translate("Original text") == "翻訳成功"
+        assert call_count == 2
+
+
+async def _no_sleep(_delay):
+    """リトライ待機をスキップする（テスト高速化）"""
+    return None
+
+
+class TestIsFatalLlmError:
+    """課金・認証系エラー判定のテスト"""
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "402 RESOURCE_EXHAUSTED. Your prepayment credits are depleted.",
+            "PAYMENT_REQUIRED",
+            "400 API key not valid. Please pass a valid API key.",
+            "API_KEY_INVALID",
+            "403 PERMISSION_DENIED",
+        ],
+    )
+    def test_fatal(self, message):
+        assert is_fatal_llm_error(Exception(message)) is True
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "429 RESOURCE_EXHAUSTED. Quota exceeded",
+            "503 UNAVAILABLE",
+            "Read timed out",
+            "chunk 4021 failed",  # 402 を部分一致で誤検出しない
+        ],
+    )
+    def test_not_fatal(self, message):
+        assert is_fatal_llm_error(Exception(message)) is False
+
+    def test_fatal_in_cause_chain(self):
+        """LLMError でラップされた元例外の 402 も検出する"""
+        try:
+            try:
+                raise RuntimeError("402 Payment Required")
+            except RuntimeError as inner:
+                raise LLMError("LangChain Gemini API call failed") from inner
+        except LLMError as outer:
+            assert is_fatal_llm_error(outer) is True
 
 
 class TestFullTextTranslatorTablePreservation:
