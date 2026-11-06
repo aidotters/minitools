@@ -31,7 +31,7 @@ from minitools.publishers.notion import NotionPublisher
 from minitools.publishers.notion_block_builder import NotionBlockBuilder
 from minitools.scrapers.jina_reader import JinaReader
 from minitools.utils.config import get_config
-from minitools.utils.logger import get_logger, setup_logger
+from minitools.utils.logger import attach_file_handler, get_logger, setup_logger
 
 load_dotenv()
 
@@ -429,6 +429,8 @@ Examples:
         log_file="google_alerts_translate.log",
         level=log_level,
     )
+    # minitools.* の警告（翻訳失敗など）も同じログファイルに残す
+    attach_file_handler("minitools", "google_alerts_translate.log")
 
     logger.info("=" * 60)
     logger.info("Google Alerts Full-Text Translator")

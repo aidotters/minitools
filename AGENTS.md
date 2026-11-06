@@ -246,11 +246,11 @@ This is a content aggregation and processing system that collects articles from 
   - Optional Tavily trend research for context-aware scoring (`--no-trends` to skip)
   - Default provider: OpenAI (configurable via `defaults.arxiv_weekly.provider`)
 - **FullTextTranslator**: Translates full Markdown articles with structure preservation
-  - Used by `medium-translate`, `arxiv-translate`, `google-alerts-translate`
+  - Used by `medium --translate`, `medium-translate`, `arxiv-translate`, `google-alerts-translate`
   - Default provider: Gemini (`gemini-3.1-flash-lite-preview`, `thinking_level=minimal`) — configurable via `defaults.<feature>.translate_provider` / `translate_model`
   - Chunk splitting by headings for LLM context length management
   - Code block preservation (only comments translated)
-  - Retry with exponential backoff
+  - Retry with exponential backoff; raises `TranslationError` when all retries fail (never returns the English original). Billing/auth errors (402 / prepayment credits / invalid API key) fail fast with `fatal=True`, 429 is retried. Callers treat it as a per-article failure (no Notion append, no `Translated` update)
   - `arxiv-translate` 出力構造（論文ごとのフォルダ）:
     ```
     outputs/arxiv_translate/{safe_id}/

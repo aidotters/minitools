@@ -139,6 +139,54 @@ def setup_logger(
     return logger
 
 
+def attach_file_handler(
+    logger_name: str,
+    log_file: str,
+    level: int = logging.WARNING,
+) -> logging.Logger:
+    """
+    既存ロガー（とその子ロガー）の出力をログファイルにも書き出す
+
+    ``minitools.*`` の各モジュールはコンソールにしか出力しないため、
+    スクリプト側で ``attach_file_handler("minitools", "<script>.log")`` を呼び、
+    翻訳失敗などの警告をスクリプトのログファイルにも残す用途。
+    子ロガーのレコードは propagate で親ロガーのハンドラに届く。
+
+    Args:
+        logger_name: ハンドラを付けるロガー名（例: "minitools"）
+        log_file: outputs/logs/ 配下のログファイル名
+        level: ファイルに書き出す最小ログレベル（既定: WARNING）
+
+    Returns:
+        ハンドラを付けたロガー
+    """
+    logger = logging.getLogger(logger_name)
+    log_dir = Path("outputs/logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = (log_dir / log_file).resolve()
+
+    # 同じファイルへのハンドラが既にあれば追加しない（重複出力防止）
+    for handler in logger.handlers:
+        if (
+            isinstance(handler, logging.FileHandler)
+            and Path(handler.baseFilename).resolve() == log_path
+        ):
+            return logger
+
+    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    file_handler.setLevel(level)
+    file_handler.setFormatter(
+        logging.Formatter(
+            fmt="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    # 親ロガーのレベルは変えない（子ロガーの有効レベルに影響するため）。
+    # propagate されたレコードは親のレベルを通らず、ハンドラのレベルだけで絞られる。
+    logger.addHandler(file_handler)
+    return logger
+
+
 def get_logger(name: str = __name__, log_file: Optional[str] = None) -> logging.Logger:
     """
     簡易的なロガー取得関数（デフォルト設定を使用）

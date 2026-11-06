@@ -18,7 +18,7 @@ from minitools.collectors.medium import MediumCollector
 from minitools.processors.translator import Translator
 from minitools.publishers.notion import NotionPublisher
 from minitools.publishers.slack import SlackPublisher
-from minitools.utils.logger import setup_logger
+from minitools.utils.logger import attach_file_handler, setup_logger
 from minitools.utils.config import get_config
 from minitools.utils.network import wait_for_network
 
@@ -84,6 +84,8 @@ async def main_async():
     logger = setup_logger(
         "scripts.medium", log_file="medium_daily_digest.log", level=log_level
     )
+    # minitools.* の警告（翻訳失敗など）も同じログファイルに残す
+    attach_file_handler("minitools", "medium_daily_digest.log")
 
     # スリープ復帰直後の実行に備え、名前解決できるまで待つ
     if not wait_for_network(["gmail.googleapis.com", "hooks.slack.com"]):

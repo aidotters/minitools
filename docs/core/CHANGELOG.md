@@ -283,6 +283,13 @@
 - ruff による静的解析チェックを追加 (bf4f777)
 
 ### Fixed
+- **全文翻訳が失敗しても英語原文が「翻訳済み」として保存される問題を修正** (2026-11-06)
+  - Gemini API の Prepay クレジット枯渇（HTTP 402）で `FullTextTranslator` の全リトライが失敗した際、原文をそのまま返していたため、Medium Daily Digest の全文翻訳5件が英語本文のまま Notion に追記され `Translated=True` になっていた
+  - `FullTextTranslator` は全リトライ失敗時に原文を返さず `TranslationError` を送出する。402 / `PAYMENT_REQUIRED` / API キー無効 / `PERMISSION_DENIED` は回復不能（`fatal=True`）としてリトライせず即失敗。429（レート制限）は従来どおりリトライ
+  - 一部チャンクだけ失敗した場合も記事全体を失敗とし、英語混じりの本文を保存しない
+  - 呼び出し側（`medium` / `medium-translate` / `google-alerts-translate` / `arxiv-translate`）は記事単位で失敗扱いとなり、Notion 追記・`Translated` 更新・`translated.md` の保存を行わない（`arxiv-translate` の `step_translate` に例外処理を追加）
+  - 新規 `attach_file_handler()`（`minitools/utils/logger.py`）で `minitools.*` の WARNING 以上を各スクリプトのログファイル（例: `outputs/logs/medium_daily_digest.log`）にも出力。従来は launchd の標準出力ログにしか残らず失敗に気付けなかった
+  - テスト: `tests/test_full_text_translator.py` を更新、`tests/test_translation_failure_handling.py` を新規追加
 - **launchd ジョブがスリープ復帰直後に DNS 未解決で失敗する問題を修正** (2026-10-09)
   - Mac のスリープ中に実行時刻を迎えると復帰直後に実行され、ネットワーク復帰前に外部 API・Slack 送信が失敗して配信が欠落していた（arxiv で確認）
   - 新規 `minitools/utils/network.py` の `wait_for_network()` で、処理開始前に名前解決が通るまで最大180秒待機（5秒間隔）。タイムアウト時は exit 1 で中止し、「0件」通知を送らない

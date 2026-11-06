@@ -34,7 +34,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 
 from minitools.scrapers.arxiv_scraper import ArxivScraper, PaperMetadata
-from minitools.processors.full_text_translator import FullTextTranslator
+from minitools.processors.full_text_translator import (
+    FullTextTranslator,
+    TranslationError,
+)
 from minitools.processors.vlm_parse_repairer import (
     VlmParseRepairer,
     repaired_output_path,
@@ -42,7 +45,7 @@ from minitools.processors.vlm_parse_repairer import (
 from minitools.publishers.notion import NotionPublisher
 from minitools.publishers.notion_block_builder import NotionBlockBuilder
 from minitools.utils.config import get_config
-from minitools.utils.logger import setup_logger
+from minitools.utils.logger import attach_file_handler, setup_logger
 
 load_dotenv()
 
@@ -251,7 +254,12 @@ async def step_translate(url: str, translator: FullTextTranslator) -> str:
     logger.info(f"Loaded markdown: {len(raw_markdown)} chars from {source_path}")
 
     logger.info("Translating full text...")
-    translated = await translator.translate(raw_markdown)
+    try:
+        translated = await translator.translate(raw_markdown)
+    except TranslationError as e:
+        # translated.md を書かない（書くと次回以降「翻訳済み」としてスキップされる）
+        logger.error(f"Translation failed: {url}: {e}")
+        return "failed"
     if not translated:
         logger.error(f"Translation failed: {url}")
         return "failed"
@@ -825,6 +833,8 @@ Examples:
         log_file="arxiv_translate.log",
         level=log_level,
     )
+    # minitools.* の警告（翻訳失敗など）も同じログファイルに残す
+    attach_file_handler("minitools", "arxiv_translate.log")
 
     logger.info("=" * 60)
     logger.info("ArXiv Full-Text Translator (arXiv / PDF / Web page)")
