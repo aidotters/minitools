@@ -46,6 +46,7 @@ openai = [
 
 [project.scripts]
 arxiv = "scripts.arxiv:main"
+arxiv-search = "scripts.arxiv_search:main"
 medium = "scripts.medium:main"
 google-alerts = "scripts.google_alerts:main"
 google-alerts-translate = "scripts.google_alerts_translate:main"

@@ -99,6 +99,13 @@ defaults:
       - "fine-tuning"
       - "finetuning"
 
+  # arXiv キーワード検索（手動実行の arxiv-search 用。毎日の arxiv では使わない）
+  arxiv_search:
+    keywords:
+      - "LLM"
+      - "(RAG OR FINETUNING OR AGENT)"
+    max_results: 50
+
   # ArXiv 論文全文翻訳（arxiv-translate）
   arxiv_translate:
     translate_provider: gemini                         # 翻訳LLMプロバイダー
