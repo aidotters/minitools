@@ -141,3 +141,66 @@ class TestHFPapersResearcher:
         async with HFPapersResearcher() as researcher:
             assert researcher.session is not None
         # __aexit__ 後はセッションがcloseされている
+
+
+def _session_returning(*responses):
+    session = AsyncMock()
+    session.get = MagicMock(
+        side_effect=[
+            AsyncMock(__aenter__=AsyncMock(return_value=r), __aexit__=AsyncMock())
+            for r in responses
+        ]
+    )
+    return session
+
+
+def _response(status, payload=None):
+    resp = AsyncMock()
+    resp.status = status
+    resp.json = AsyncMock(return_value=payload)
+    resp.raise_for_status = MagicMock()
+    return resp
+
+
+class TestGetDailyPapers:
+    @pytest.mark.asyncio
+    async def test_success(self):
+        researcher = HFPapersResearcher()
+        researcher.session = _session_returning(
+            _response(200, [{"paper": {"id": "1"}}])
+        )
+        items = await researcher.get_daily_papers("2026-11-20")
+        assert items == [{"paper": {"id": "1"}}]
+        params = researcher.session.get.call_args.kwargs["params"]
+        assert params["date"] == "2026-11-20"
+
+    @pytest.mark.asyncio
+    async def test_retry_then_success(self):
+        researcher = HFPapersResearcher()
+        researcher.session = _session_returning(
+            _response(429), _response(200, [{"paper": {"id": "2"}}])
+        )
+        with patch(
+            "minitools.researchers.hf_papers.asyncio.sleep", new_callable=AsyncMock
+        ):
+            items = await researcher.get_daily_papers("2026-11-20")
+        assert items == [{"paper": {"id": "2"}}]
+
+    @pytest.mark.asyncio
+    async def test_non_list_and_errors_return_empty(self):
+        researcher = HFPapersResearcher()
+        researcher.session = _session_returning(_response(200, {"error": "x"}))
+        assert await researcher.get_daily_papers("2026-11-20") == []
+
+        researcher.session = _session_returning(
+            _response(500), _response(500), _response(500)
+        )
+        with patch(
+            "minitools.researchers.hf_papers.asyncio.sleep", new_callable=AsyncMock
+        ):
+            assert await researcher.get_daily_papers("2026-11-20") == []
+
+    @pytest.mark.asyncio
+    async def test_no_session(self):
+        with pytest.raises(RuntimeError):
+            await HFPapersResearcher().get_daily_papers("2026-11-20")

@@ -33,7 +33,7 @@ help:
 	@echo "  make youtube [options] - Summarize YouTube video"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make -- arxiv --date 2025-09-04 --max-results 50"
+	@echo "  make -- arxiv --date 2025-09-04 --min-upvotes 20"
 	@echo "  make -- medium --date 2024-01-15 --notion"
 	@echo "  make -- google --hours 24"
 	@echo "  make -- youtube --url https://youtube.com/watch?v=..."
@@ -123,7 +123,7 @@ youtube:
 
 # Test modes
 arxiv-test:
-	@docker-compose -f $(COMPOSE_FILE) run --rm minitools minitools-arxiv --test --max-results 1
+	@docker-compose -f $(COMPOSE_FILE) run --rm minitools minitools-arxiv --test
 
 medium-test:
 	@docker-compose -f $(COMPOSE_FILE) run --rm minitools minitools-medium --test
@@ -162,7 +162,7 @@ clean:
 # Note: The catch-all target (%) allows passing arguments directly
 # Use -- (double dash) before target name when passing options with dashes
 # Examples:
-#   make -- arxiv --date 2025-09-04 --max-results 50
+#   make -- arxiv --date 2025-09-04 --min-upvotes 20
 #   make -- medium --date 2024-01-15 --notion
 #   make -- google --hours 24
 #   make -- youtube --url https://youtube.com/watch?v=...

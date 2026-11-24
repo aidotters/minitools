@@ -81,12 +81,23 @@ processing:
 defaults:
   # ArXiv論文検索
   arxiv:
-    # デフォルトの検索キーワード
-    keywords:
+    # Hugging Face Daily Papers（前日分）から upvote の多い論文だけを保存する
+    min_upvotes: 10                # これ未満の upvote の論文は保存しない
+    max_papers: 7                  # 1日に保存する最大件数
+    weekly_top: 10                 # 土曜の「今週の注目論文」に載せる件数
+    # 注目分野の印を付ける語（タイトル・要旨・HF のキーワードを見る。選定には使わない）
+    focus_keywords:
       - "LLM"
-      - "(RAG OR FINETUNING OR AGENT)"
-    days_before: 1                 # 何日前から検索するか
-    max_results: 50                # 最大検索結果数
+      - "large language model"
+      - "language model"
+      - "RAG"
+      - "retrieval-augmented"
+      - "retrieval augmented"
+      - "agent"
+      - "agents"
+      - "agentic"
+      - "fine-tuning"
+      - "finetuning"
 
   # ArXiv 論文全文翻訳（arxiv-translate）
   arxiv_translate:

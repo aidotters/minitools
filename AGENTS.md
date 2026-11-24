@@ -9,7 +9,7 @@ It is the single source of truth for project context; `CLAUDE.md` only imports t
 ```bash
 # Simple commands for Docker execution
 make arxiv                           # Run ArXiv with defaults
-make -- arxiv --date 2025-09-04 --max-results 100
+make -- arxiv --date 2025-09-04 --min-upvotes 20
 make -- medium --date 2024-01-15 --notion
 make -- google --hours 24
 make -- youtube --url https://youtube.com/watch?v=...
@@ -42,9 +42,13 @@ uv add --dev pytest black ruff mypy  # Dev dependencies
 
 ### Running Tools (Local)
 ```bash
-# ArXiv paper search and translation
-uv run arxiv --keywords "LLM" "RAG" --days 7
-uv run arxiv --date 2024-01-15 --max-results 100
+# ArXiv: Hugging Face Daily Papers（前日分）で upvote の多い論文だけを翻訳・要約して Notion/Slack へ
+# 既定は upvote 10 以上の上位 7 件（settings.yaml の defaults.arxiv）。土曜の実行では「今週の注目論文」ページも作る
+uv run arxiv                                   # 対象日=昨日（JST）
+uv run arxiv --date 2026-11-20                 # HF Daily Papers の対象日を指定
+uv run arxiv --min-upvotes 20 --max-papers 5   # 選定条件を上書き
+uv run arxiv --weekly-only --date 2026-11-20   # 週次ページだけ作る（この日を最終日とする7日間）
+uv run arxiv --no-weekly                       # 土曜でも週次ページを作らない
 
 # Medium Daily Digest processing (uses email preview by default)
 uv run medium --date 2024-01-15
@@ -157,7 +161,7 @@ uv run arxiv-weekly --provider gemini      # Use Gemini API
 
 # Test modes (process only 1 article for testing)
 uv run medium --test --notion
-uv run arxiv --test --max-results 1
+uv run arxiv --test
 ```
 
 ### Development

@@ -201,6 +201,10 @@ class SlackPublisher:
             claps = article.get("claps", 0)
             if claps:
                 message += f"   👏 {claps:,}\n"
+            hf_upvotes = article.get("hf_upvotes")
+            if hf_upvotes:
+                mark = "（注目分野）" if article.get("hf_focus") else ""
+                message += f"   ⭐ HF {hf_upvotes:,}{mark}\n"
 
             # 要約（日本語優先）
             summary = article.get("japanese_summary") or article.get("summary", "")

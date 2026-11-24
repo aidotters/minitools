@@ -307,3 +307,21 @@ class TestSlackPublisherArxivWeeklyTwoTier:
 
         assert "TOP 1" in message
         assert "HuggingFace" not in message
+
+
+class TestSlackArticlesHfLine:
+    """日次通知の HF upvote 行"""
+
+    def test_hf_line(self):
+        message = SlackPublisher().format_articles_message(
+            [
+                {"title": "A", "hf_upvotes": 1234, "hf_focus": True},
+                {"title": "B", "hf_upvotes": 15},
+                {"title": "C"},
+            ],
+            date="2026-11-20",
+            title="Hugging Face 注目論文",
+        )
+        assert "⭐ HF 1,234（注目分野）" in message
+        assert "⭐ HF 15\n" in message
+        assert message.count("⭐ HF") == 2

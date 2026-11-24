@@ -23,6 +23,46 @@ class PageInfo(NamedTuple):
     is_translated: bool
 
 
+# arXiv DB に追加する HF Daily Papers 由来のプロパティ
+ARXIV_HF_PROPERTIES: Dict[str, Dict[str, Any]] = {
+    "HF Upvotes": {"number": {"format": "number"}},
+    "HF URL": {"url": {}},
+    "GitHub": {"url": {}},
+    "GitHub Stars": {"number": {"format": "number"}},
+    "HF要約": {"rich_text": {}},
+    "タグ": {"multi_select": {"options": []}},
+    "注目分野": {"checkbox": {}},
+    "HF掲載日": {"date": {}},
+}
+
+
+def _plain_text(prop: Dict[str, Any], kind: str) -> str:
+    return "".join(
+        part.get("plain_text") or part.get("text", {}).get("content", "")
+        for part in prop.get(kind) or []
+    )
+
+
+def _arxiv_page_summary(page: Dict[str, Any]) -> Dict[str, Any]:
+    """arXiv DB のページを週次ランキング用の dict にする"""
+    props = page.get("properties") or {}
+    url = (props.get("URL") or {}).get("url") or ""
+    arxiv_id = url.rstrip("/").rsplit("/", 1)[-1] if "arxiv.org/abs/" in url else ""
+    hf_date = ((props.get("HF掲載日") or {}).get("date") or {}).get("start") or ""
+    return {
+        "page_id": page.get("id", ""),
+        "title": _plain_text(props.get("タイトル") or {}, "title"),
+        "japanese_summary": _plain_text(props.get("日本語訳") or {}, "rich_text"),
+        "url": url,
+        "hf_url": (props.get("HF URL") or {}).get("url") or "",
+        "github_url": (props.get("GitHub") or {}).get("url") or "",
+        "hf_upvotes": (props.get("HF Upvotes") or {}).get("number") or 0,
+        "arxiv_id": arxiv_id,
+        "hf_date": hf_date,
+        "hf_focus": bool((props.get("注目分野") or {}).get("checkbox")),
+    }
+
+
 class NotionPublisher:
     """Notionデータベースにコンテンツを保存するクラス"""
 
@@ -417,7 +457,122 @@ class NotionPublisher:
         if article_data.get("hf_upvotes"):
             properties["HF Upvotes"] = {"number": article_data["hf_upvotes"]}
 
+        # HF Daily Papers 由来の項目（無い論文では何も書かない）
+        if article_data.get("hf_url"):
+            properties["HF URL"] = {"url": article_data["hf_url"]}
+        if article_data.get("github_url"):
+            properties["GitHub"] = {"url": article_data["github_url"]}
+        if isinstance(article_data.get("github_stars"), int):
+            properties["GitHub Stars"] = {"number": article_data["github_stars"]}
+        if article_data.get("hf_ai_summary"):
+            properties["HF要約"] = {
+                "rich_text": [
+                    {"text": {"content": article_data["hf_ai_summary"][:2000]}}
+                ]
+            }
+        if article_data.get("hf_keywords"):
+            properties["タグ"] = {
+                "multi_select": [{"name": k} for k in article_data["hf_keywords"]]
+            }
+        if "hf_focus" in article_data:
+            properties["注目分野"] = {"checkbox": bool(article_data["hf_focus"])}
+        if article_data.get("hf_date"):
+            properties["HF掲載日"] = {"date": {"start": article_data["hf_date"][:10]}}
+
         return properties
+
+    async def ensure_arxiv_properties(self, database_id: str) -> bool:
+        """
+        arXiv DB に HF 由来のプロパティが無ければ追加する
+
+        既にあるプロパティは触らない。失敗しても保存処理は続けられるよう
+        例外は投げず False を返す（未知のプロパティを含む保存は失敗するため、
+        呼び出し側はログで気づける）。
+        """
+        try:
+            db = cast(
+                Dict[str, Any],
+                await self._retry_api_call(
+                    lambda: self.client.databases.retrieve(database_id=database_id),
+                    description="retrieve_database",
+                ),
+            )
+            existing = set((db.get("properties") or {}).keys())
+            missing = {
+                name: schema
+                for name, schema in ARXIV_HF_PROPERTIES.items()
+                if name not in existing
+            }
+            if not missing:
+                return True
+            await self._retry_api_call(
+                lambda: self.client.databases.update(
+                    database_id=database_id, properties=missing
+                ),
+                description="update_database_properties",
+            )
+            logger.info(f"arXiv DB にプロパティを追加: {', '.join(missing)}")
+            return True
+        except Exception as e:
+            logger.error(f"arXiv DB のプロパティ追加に失敗: {e}")
+            return False
+
+    async def get_database_parent_page_id(self, database_id: str) -> Optional[str]:
+        """データベースの親ページ ID を返す（親がページでなければ None）"""
+        try:
+            db = cast(
+                Dict[str, Any],
+                await self._retry_api_call(
+                    lambda: self.client.databases.retrieve(database_id=database_id),
+                    description="retrieve_database_parent",
+                ),
+            )
+            parent = db.get("parent") or {}
+            if parent.get("type") == "page_id":
+                return parent.get("page_id")
+            return None
+        except Exception as e:
+            logger.error(f"データベースの親ページ取得に失敗: {e}")
+            return None
+
+    async def query_arxiv_by_hf_date(
+        self, database_id: str, start: str, end: str
+    ) -> List[Dict[str, Any]]:
+        """
+        HF掲載日が start〜end（YYYY-MM-DD・両端含む）のページを返す
+
+        Returns:
+            page_id, title, japanese_summary, url, hf_url, github_url,
+            hf_upvotes, arxiv_id, hf_date, hf_focus を持つ dict のリスト
+        """
+        pages: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        while True:
+            params: Dict[str, Any] = {
+                "database_id": database_id,
+                "filter": {
+                    "and": [
+                        {"property": "HF掲載日", "date": {"on_or_after": start}},
+                        {"property": "HF掲載日", "date": {"on_or_before": end}},
+                    ]
+                },
+                "page_size": 100,
+            }
+            if cursor:
+                params["start_cursor"] = cursor
+            result = cast(
+                Dict[str, Any],
+                await self._retry_api_call(
+                    lambda: self.client.databases.query(**params),
+                    description="query_arxiv_by_hf_date",
+                ),
+            )
+            for page in result.get("results", []):
+                pages.append(_arxiv_page_summary(page))
+            if not result.get("has_more"):
+                break
+            cursor = result.get("next_cursor")
+        return pages
 
     def _build_medium_properties(self, article_data: Dict[str, Any]) -> Dict[str, Any]:
         """
