@@ -12,6 +12,7 @@ from minitools.utils.logger import get_logger
 logger = get_logger(__name__)
 
 HF_PAPERS_API_BASE = "https://huggingface.co/api/papers"
+HF_DAILY_PAPERS_API = "https://huggingface.co/api/daily_papers"
 
 
 @dataclass
@@ -101,6 +102,66 @@ class HFPapersResearcher:
                         return HFPaperStats(arxiv_id=arxiv_id)
 
         return HFPaperStats(arxiv_id=arxiv_id)
+
+    async def get_daily_papers(self, date: str, limit: int = 100) -> list[dict]:
+        """HF Daily Papers の指定日の一覧を取得
+
+        Args:
+            date: 対象日（YYYY-MM-DD）
+            limit: 最大取得件数
+
+        Returns:
+            Daily Papers のアイテムのリスト（取得失敗時は空リスト）
+        """
+        if not self.session:
+            raise RuntimeError("Session not initialized. Use async context manager.")
+
+        params = {"date": date, "limit": str(limit)}
+        max_retries = 3
+
+        for attempt in range(max_retries):
+            try:
+                async with self.session.get(
+                    HF_DAILY_PAPERS_API, params=params
+                ) as response:
+                    if response.status == 429 or response.status >= 500:
+                        if attempt < max_retries - 1:
+                            delay = 2 ** (attempt + 1)
+                            logger.warning(
+                                f"HF Daily Papers error {response.status} for {date}, "
+                                f"retrying in {delay}s (attempt {attempt + 1}/{max_retries})"
+                            )
+                            await asyncio.sleep(delay)
+                            continue
+                        logger.error(
+                            f"HF Daily Papers error {response.status} for {date} "
+                            f"after {max_retries} retries"
+                        )
+                        return []
+
+                    response.raise_for_status()
+                    data = await response.json()
+                    if not isinstance(data, list):
+                        logger.error(f"Unexpected HF Daily Papers response for {date}")
+                        return []
+                    logger.info(f"HF Daily Papers {date}: {len(data)} papers")
+                    return data
+
+            except aiohttp.ClientError as e:
+                if attempt < max_retries - 1:
+                    delay = 2 ** (attempt + 1)
+                    logger.warning(
+                        f"Network error for HF Daily Papers {date}: {e}, "
+                        f"retrying in {delay}s (attempt {attempt + 1}/{max_retries})"
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        f"Failed to fetch HF Daily Papers {date} after {max_retries} retries: {e}"
+                    )
+                    return []
+
+        return []
 
     async def get_papers_stats(self, arxiv_ids: list[str]) -> dict[str, HFPaperStats]:
         """複数論文のHF統計を一括取得

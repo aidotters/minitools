@@ -116,8 +116,7 @@ make setup  # 自動的にOSを検出して適切な設定を使用
 ```bash
 # ArXiv論文の検索・翻訳
 make arxiv
-make -- arxiv --keywords "LLM" "RAG" --days 7
-make -- arxiv --date 2025-09-04 --max-results 100
+make -- arxiv --date 2025-09-04 --min-upvotes 20
 
 # Medium Daily Digestの処理
 make medium
@@ -147,7 +146,7 @@ make help         # 利用可能なコマンドの表示
 
 ```bash
 # ArXiv論文の検索・翻訳
-docker-compose run minitools arxiv --keywords "LLM" "RAG"
+docker-compose run minitools arxiv --date 2025-09-04
 
 # Medium Daily Digestの処理
 docker-compose run minitools medium --date 2024-01-15
@@ -289,7 +288,7 @@ uv add --dev pytest black ruff
 uv sync
 
 # スクリプトの実行（仮想環境を自動的に使用）
-uv run arxiv --keywords "machine learning"
+uv run arxiv --test
 
 # Pythonインタープリターの実行
 uv run python
@@ -307,20 +306,21 @@ uv pip list
 
 #### ArXiv論文検索
 ```bash
-# 基本的な使い方（仮想環境有効化済み）
-arxiv --keywords "LLM" "RAG" --days 7
+# Hugging Face Daily Papers（前日分・JST）で upvote の多い論文だけを翻訳・要約して保存
+# 既定は upvote 10 以上の上位 7 件（settings.yaml の defaults.arxiv で変更可）
+uv run arxiv
 
-# uvを使った実行（仮想環境の有効化不要）
-uv run arxiv --keywords "LLM" "(RAG OR FINETUNING OR AGENT)" --days 30 --max-results 100
+# HF Daily Papers の対象日を指定
+uv run arxiv --date 2024-01-15
 
-# 特定の日付を基準に検索
-uv run arxiv --date 2024-01-15 --days 7  # 1/9〜1/15の論文を検索
+# 選定条件を上書き
+uv run arxiv --min-upvotes 20 --max-papers 5
 
-# 月曜日実行：自動的に土日分もカバー（3日検索）
-uv run arxiv --keywords "LLM"
+# 土曜日の実行では「今週の注目論文」ページも作る。週次ページだけ作るとき
+uv run arxiv --weekly-only --date 2024-01-19
 
-# 月曜日でも手動指定は優先
-uv run arxiv --keywords "LLM" --days 5
+# 土曜日でも週次ページを作らない
+uv run arxiv --no-weekly
 
 # Notionのみに保存
 uv run arxiv --notion
@@ -692,13 +692,13 @@ asyncio.run(main())
 
 ```bash
 # 従来の方法（後方互換性のため維持）
-python scripts/arxiv.py --keywords "LLM" --days 7
+python scripts/arxiv.py --date 2024-01-15
 python scripts/medium.py --date 2024-01-15
 python scripts/google_alerts.py --hours 12
 python scripts/youtube.py --url "https://www.youtube.com/watch?v=..."
 
 # uvを使った実行
-uv run python scripts/arxiv.py --keywords "LLM" --date 2024-01-15
+uv run python scripts/arxiv.py --date 2024-01-15
 uv run python scripts/medium.py --date 2024-01-15
 uv run python scripts/google_alerts.py --date 2024-01-15
 uv run python scripts/youtube.py --url "URL"
@@ -708,25 +708,27 @@ uv run python scripts/youtube.py --url "URL"
 
 ### ArXiv論文要約ツール
 
-arXivから指定キーワードで論文を検索し、要約を日本語に翻訳してNotionに保存、Slackに通知します。
+Hugging Face Daily Papers に前日（JST）載った論文のうち、upvote の多いものだけを選び、要旨を日本語に翻訳・要約して Notion に保存し、Slack に通知します。キーワードでは絞らないので、AI 分野を幅広く追えます。
 
-**特徴**:
-- 並列処理により50論文を約60秒で処理（4倍高速化）
-- 最大10論文を同時処理
-- 適切なレート制限でAPIを保護
+**選定**:
+- upvote が `min_upvotes`（既定 10）以上の論文を、upvote の多い順に最大 `max_papers`（既定 7）件
+- 条件を満たす論文が無い日は 0 件のまま（Slack には 0 件と通知）
+
+**Notion に保存する欄**（無ければ初回に自動で追加）:
+- HF Upvotes・HF URL・GitHub・GitHub Stars・HF要約（HF の AI 要約）・タグ（HF の ai_keywords）・HF掲載日・注目分野（LLM・RAG・エージェント・ファインチューニングに当たる論文）
+
+**今週の注目論文**:
+- 土曜日の実行（対象日＝金曜）で、その週（土〜金）に保存した論文を upvote を取り直して上位 `weekly_top`（既定 10）件に並べ、arXiv DB の親ページに子ページとして作ります
 
 **オプション**:
-- `--keywords`: 検索キーワード（複数指定可、デフォルト: "LLM" "(RAG OR FINETUNING OR AGENT)"）
-- `--days`: 何日前から検索するか（デフォルト: 1、月曜日は自動的に3日に拡張）
-- `--date`: 基準日（YYYY-MM-DD形式、デフォルト: 昨日）
-- `--max-results`: 最大検索結果数（デフォルト: 50）
+- `--date`: HF Daily Papers の対象日（YYYY-MM-DD、デフォルト: 昨日）
+- `--min-upvotes`: upvote の下限
+- `--max-papers`: 1日に保存する最大件数
 - `--notion`: Notionへの保存のみ実行
 - `--slack`: Slackへの送信のみ実行
-
-**月曜日自動検索機能**:
-- 月曜日実行時は自動的に過去3日間を検索（土日提出分をカバー）
-- 手動で`--days`指定時はユーザー指定を優先
-- 火〜金曜日は従来通り1日検索で効率性を保持
+- `--no-weekly`: 土曜日でも週次ページを作らない
+- `--weekly-only`: 日次処理をせず、`--date` を最終日とする週次ページだけを作る
+- `--test`: 最初の1論文のみ処理
 
 詳細: [docs/core/architecture.md](docs/core/architecture.md)
 

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-ArXiv paper collection script - backward compatibility wrapper.
+arXiv 論文の収集スクリプト。
+
+Hugging Face Daily Papers に前日載った論文のうち、upvote の多いものだけを
+日本語に翻訳・要約して Notion に保存し、Slack に通知する。
+土曜日の実行では、その週に保存した論文の上位をまとめた「今週の注目論文」ページも作る。
 """
 
 import os
@@ -11,23 +15,32 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import argparse
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytz
 from dotenv import load_dotenv
 
-from minitools.collectors.arxiv import ArxivCollector
+from minitools.processors.hf_daily_selector import (
+    DEFAULT_FOCUS_KEYWORDS,
+    DEFAULT_MAX_PAPERS,
+    DEFAULT_MIN_UPVOTES,
+    build_daily_selection,
+)
+from minitools.processors.hf_weekly import create_weekly_page
 from minitools.processors.translator import Translator
 from minitools.publishers.notion import NotionPublisher
 from minitools.publishers.slack import SlackPublisher
-from minitools.utils.logger import setup_logger
+from minitools.researchers.hf_papers import HFPapersResearcher
 from minitools.utils.config import get_config
+from minitools.utils.logger import setup_logger
 from minitools.utils.network import wait_for_network
 
 load_dotenv()
 
-# ロガーは後で初期化（argparseの前には基本設定のみ）
-logger = None
+logger: logging.Logger = logging.getLogger("scripts.arxiv")
+
+# launchd は火〜土に走り、対象日は前日。土曜の実行（対象日=金曜）で週次ページを作る
+WEEKLY_BASE_WEEKDAY = 4
 
 
 def main():
@@ -35,150 +48,157 @@ def main():
     asyncio.run(main_async())
 
 
-async def main_async():
-    # デフォルトの基準日（昨日）を計算
-    jst = pytz.timezone("Asia/Tokyo")
-    yesterday = (datetime.now(jst) - timedelta(days=1)).strftime("%Y-%m-%d")
-
+def _parse_args(yesterday: str) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="arXiv論文を検索して要約をNotionに保存"
+        description="Hugging Face で注目された arXiv 論文を翻訳して Notion に保存"
     )
     parser.add_argument(
-        "--keywords",
-        "-q",
-        "--queries",
-        nargs="+",
-        default=["LLM", "(RAG OR FINETUNING OR AGENT)"],
-        help="検索キーワード（複数指定可）",
+        "--date",
+        "-d",
+        type=str,
+        default=yesterday,
+        help="HF Daily Papers の対象日（YYYY-MM-DD・既定は昨日）",
     )
-    parser.add_argument("--days", type=int, default=1, help="何日前から検索するか")
+    parser.add_argument("--min-upvotes", type=int, default=None, help="upvote の下限")
     parser.add_argument(
-        "--date", "-d", type=str, default=yesterday, help="基準日（YYYY-MM-DD形式）"
-    )
-    parser.add_argument(
-        "--max-results",
-        "-r",
-        "--max_results",
-        type=int,
-        default=50,
-        help="取得する最大論文数",
+        "--max-papers", type=int, default=None, help="1日に保存する最大件数"
     )
     parser.add_argument("--notion", action="store_true", help="Notionへの保存のみ実行")
     parser.add_argument("--slack", action="store_true", help="Slackへの送信のみ実行")
+    parser.add_argument(
+        "--no-weekly", action="store_true", help="土曜日の週次ページを作らない"
+    )
+    parser.add_argument(
+        "--weekly-only",
+        action="store_true",
+        help="日次処理をせず、--date を最終日とする週次ページだけを作る",
+    )
     parser.add_argument("--debug", action="store_true", help="デバッグモードで実行")
     parser.add_argument(
         "--test", action="store_true", help="テストモード（最初の1論文のみ処理）"
     )
+    return parser.parse_args()
 
-    args = parser.parse_args()
 
-    # 設定ファイルからデフォルトログレベルを取得
+async def _translate(papers: list[dict]) -> list[dict]:
+    translator = Translator()
+    processed: list[dict] = []
+    for i, paper in enumerate(papers, 1):
+        try:
+            logger.info(f"  論文処理中 ({i}/{len(papers)}): {paper['title'][:60]}...")
+            result = await translator.translate_with_summary(
+                title=paper["title"],
+                content=paper["abstract"],
+                author=paper["authors"],
+            )
+            paper["japanese_title"] = result["japanese_title"]
+            paper["japanese_summary"] = result["japanese_summary"]
+            processed.append(paper)
+            logger.info(f"    -> 翻訳完了: {result['japanese_title'][:40]}...")
+        except Exception as e:
+            logger.error(
+                f"    -> 処理エラー ({i}/{len(papers)}): {paper['title'][:50]}... - {e}"
+            )
+    return processed
+
+
+async def main_async():
+    jst = pytz.timezone("Asia/Tokyo")
+    yesterday = (datetime.now(jst) - timedelta(days=1)).strftime("%Y-%m-%d")
+    args = _parse_args(yesterday)
+
     config = get_config()
     default_log_level = config.get("logging.level", "INFO").upper()
+    log_level = (
+        logging.DEBUG
+        if args.debug
+        else getattr(logging, default_log_level, logging.INFO)
+    )
 
-    # デバッグオプションが指定されている場合は上書き
-    if args.debug:
-        log_level = logging.DEBUG
-    else:
-        log_level = getattr(logging, default_log_level, logging.INFO)
-
-    # ロガーの初期化
     global logger
     logger = setup_logger("scripts.arxiv", log_file="arxiv.log", level=log_level)
 
-    # NotionPublisherのロガーも設定（同じログファイルとレベルを使用）
-    # notion_logger = setup_logger("minitools.publishers.notion", log_file="arxiv.log", level=log_level)
+    base_date = datetime.strptime(args.date, "%Y-%m-%d").date()
+    min_upvotes = (
+        args.min_upvotes
+        if args.min_upvotes is not None
+        else config.get("defaults.arxiv.min_upvotes", DEFAULT_MIN_UPVOTES)
+    )
+    max_papers = (
+        args.max_papers
+        if args.max_papers is not None
+        else config.get("defaults.arxiv.max_papers", DEFAULT_MAX_PAPERS)
+    )
+    focus_keywords = config.get("defaults.arxiv.focus_keywords", DEFAULT_FOCUS_KEYWORDS)
+    weekly_top = config.get("defaults.arxiv.weekly_top", 10)
 
-    # 日付範囲の設定（base_dateを基準に計算）
-    base_date = datetime.strptime(args.date, "%Y-%m-%d")
-
-    # 月曜日かつ--daysが明示的に指定されていない場合は3日検索（土日分をカバー）
-    if base_date.weekday() == 0 and "--days" not in sys.argv:
-        effective_days = 3
-        logger.info("月曜日検索：土日分をカバーするため過去3日間を検索します")
-    else:
-        effective_days = args.days
-
-    start_date = base_date - timedelta(days=effective_days - 1)
-    end_date = base_date
-
-    # フラグの処理
     save_notion = not args.slack or args.notion
     send_slack = not args.notion or args.slack
+    database_id = os.getenv("NOTION_ARXIV_DATABASE_ID") or os.getenv("NOTION_DB_ID")
 
     # スリープ復帰直後の実行に備え、名前解決できるまで待つ
-    if not wait_for_network(["export.arxiv.org", "hooks.slack.com"]):
+    if not wait_for_network(["huggingface.co", "hooks.slack.com"]):
         logger.error("ネットワーク未接続のため処理を中止します")
         sys.exit(1)
 
-    # コレクターの初期化
-    collector = ArxivCollector()
+    async with HFPapersResearcher() as researcher:
+        if not args.weekly_only:
+            await _run_daily(
+                researcher,
+                base_date,
+                min_upvotes,
+                max_papers,
+                focus_keywords,
+                database_id,
+                save_notion,
+                send_slack,
+                args.test,
+            )
 
-    # 論文を検索
+        make_weekly = args.weekly_only or (
+            base_date.weekday() == WEEKLY_BASE_WEEKDAY
+            and save_notion
+            and not args.no_weekly
+        )
+        if make_weekly:
+            await _run_weekly(researcher, database_id, base_date, weekly_top)
+
+    logger.info("Processing completed")
+
+
+async def _run_daily(
+    researcher: HFPapersResearcher,
+    base_date: date,
+    min_upvotes: int,
+    max_papers: int,
+    focus_keywords: list[str],
+    database_id: str | None,
+    save_notion: bool,
+    send_slack: bool,
+    test_mode: bool,
+) -> None:
+    hf_date = base_date.isoformat()
+    items = await researcher.get_daily_papers(hf_date)
+    papers = build_daily_selection(
+        items, hf_date, min_upvotes, max_papers, focus_keywords
+    )
     logger.info(
-        f"Searching max {args.max_results} papers from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} (effective_days: {effective_days}) with queries: {args.keywords}"
-    )
-    papers = collector.search(
-        queries=args.keywords,
-        start_date=start_date.strftime("%Y%m%d"),
-        end_date=end_date.strftime("%Y%m%d"),
-        max_results=args.max_results,
+        f"HF Daily Papers {hf_date}: {len(items)} 件中、upvote {min_upvotes} 以上の"
+        f"上位 {len(papers)} 件を選びました"
     )
 
-    if not papers:
-        logger.info("No papers found")
-    else:
-        logger.info(f"Found {len(papers)} papers")
-
-    # テストモードの場合は最初の1件のみ処理
-    if args.test and papers:
+    if test_mode and papers:
         papers = papers[:1]
         logger.info("テストモード: 最初の1論文のみ処理します")
 
-    # 翻訳と要約
-    translator = Translator()
-    processed_papers = []
+    processed = await _translate(papers) if papers else []
 
-    if papers:  # 論文がある場合のみ処理
-        logger.info(f"翻訳・要約処理を開始: {len(papers)}件の論文を処理中...")
-        async with collector:
-            for i, paper in enumerate(papers, 1):
-                try:
-                    logger.info(
-                        f"  論文処理中 ({i}/{len(papers)}): {paper['title'][:60]}..."
-                    )
-
-                    # タイトルと要約を翻訳
-                    result = await translator.translate_with_summary(
-                        title=paper["title"],
-                        content=paper["abstract"],
-                        author=paper["authors"],
-                    )
-
-                    paper["japanese_title"] = result["japanese_title"]
-                    paper["japanese_summary"] = result["japanese_summary"]
-                    processed_papers.append(paper)
-
-                    logger.info(f"    -> 翻訳完了: {result['japanese_title'][:40]}...")
-
-                except Exception as e:
-                    logger.error(
-                        f"    -> 処理エラー ({i}/{len(papers)}): {paper['title'][:50]}... - {e}"
-                    )
-
-    # Notionに保存
-    if save_notion and processed_papers:
-        # 環境変数名の統一（フォールバック対応）
-        database_id = os.getenv("NOTION_ARXIV_DATABASE_ID") or os.getenv("NOTION_DB_ID")
+    if save_notion and processed:
         if database_id:
             try:
-                logger.info(
-                    f"Notion保存開始: {len(processed_papers)}件の論文を保存中..."
-                )
                 publisher = NotionPublisher(source_type="arxiv")
-                result = await publisher.batch_save_articles(
-                    database_id, processed_papers
-                )
+                await publisher.ensure_arxiv_properties(database_id)
+                result = await publisher.batch_save_articles(database_id, processed)
                 stats = result.get("stats", {})
                 logger.info("=" * 60)
                 logger.info("Notion保存結果:")
@@ -193,7 +213,6 @@ async def main_async():
 
     # Slackに送信（論文が0件でも通知）
     if send_slack:
-        # 環境変数名の統一（フォールバック対応）
         webhook_url = os.getenv("SLACK_ARXIV_WEBHOOK_URL") or os.getenv(
             "SLACK_WEBHOOK_URL"
         )
@@ -201,15 +220,29 @@ async def main_async():
             try:
                 async with SlackPublisher(webhook_url) as slack:
                     await slack.send_articles(
-                        processed_papers,
-                        date=end_date.strftime("%Y-%m-%d"),
-                        title=f"arXiv Papers ({', '.join(args.keywords)})",
+                        processed,
+                        date=hf_date,
+                        title="Hugging Face 注目論文",
                     )
                 logger.info("Sent to Slack")
             except Exception as e:
                 logger.error(f"Error sending to Slack: {e}")
 
-    logger.info("Processing completed")
+
+async def _run_weekly(
+    researcher: HFPapersResearcher,
+    database_id: str | None,
+    end: date,
+    top_n: int,
+) -> None:
+    if not database_id:
+        logger.warning("NOTION_ARXIV_DATABASE_ID 未設定のため週次ページを作りません")
+        return
+    try:
+        publisher = NotionPublisher(source_type="arxiv")
+        await create_weekly_page(publisher, researcher, database_id, end, top_n)
+    except Exception as e:
+        logger.error(f"週次ページの作成エラー: {e}")
 
 
 if __name__ == "__main__":
