@@ -10,7 +10,7 @@ minitools/
 │   ├── __init__.py                 # パッケージエクスポート
 │   ├── collectors/                 # データ収集レイヤー
 │   │   ├── __init__.py
-│   │   ├── arxiv.py               # ArXiv論文検索
+│   │   ├── arxiv.py               # ArXiv論文検索（手動の arxiv-search 用）
 │   │   ├── medium.py              # Medium Daily Digest収集
 │   │   ├── google_alerts.py       # Google Alerts収集
 │   │   ├── youtube.py             # YouTube文字起こし（字幕優先→Whisper）
@@ -31,10 +31,11 @@ minitools/
 │   ├── researchers/                # リサーチレイヤー
 │   │   ├── __init__.py
 │   │   ├── trend.py               # Tavily APIでトレンド調査
-│   │   └── hf_papers.py           # Hugging Face Daily Papersから論文取得
+│   │   └── hf_papers.py           # Hugging Face Daily Papers の取得・upvote の取り直し
 │   ├── scrapers/                   # スクレイピングレイヤー
 │   │   ├── __init__.py
 │   │   ├── medium_scraper.py      # Playwright Medium記事取得（CDP/スタンドアロン）
+│   │   ├── article_dates.py       # 記事の元日付抽出（JSON-LD 優先・OpenGraph 補完）
 │   │   ├── arxiv_scraper.py       # ArXiv PDFダウンロード + marker-pdf変換（一般PDF/HTMLも振り分け）
 │   │   ├── web_document.py        # Webページ HTML→Markdown 変換（数式・コード保持）
 │   │   ├── jina_reader.py         # Jina AI Reader経由のMarkdown取得（Google Alerts用）
@@ -47,6 +48,8 @@ minitools/
 │   │   ├── vlm_parse_repairer.py  # marker-pdfパース欠陥のVLM修復
 │   │   ├── weekly_digest.py       # 週次ダイジェスト生成
 │   │   ├── arxiv_weekly.py        # ArXiv週次ダイジェスト生成
+│   │   ├── hf_daily_selector.py   # HF Daily Papers の選定・論文 dict への変換（純粋関数）
+│   │   ├── hf_weekly.py           # 「今週の注目論文」ページの組み立て
 │   │   ├── x_trend.py             # X トレンド処理（LLMフィルタ・要約）
 │   │   ├── youtube_summary.py     # YouTube要約文+ポイント生成（get_llm_client）
 │   │   └── duplicate_detector.py  # 類似記事検出
@@ -59,10 +62,12 @@ minitools/
 │       ├── __init__.py
 │       ├── config.py              # 設定管理（シングルトン）
 │       ├── processed_store.py     # 処理済み動画のper-profile記録（youtube-mail-digest）
+│       ├── network.py             # 名前解決が通るまで待機（定期ジョブの起動直後）
 │       └── logger.py              # カラーログ出力
 │
 ├── scripts/                        # CLIエントリーポイント
-│   ├── arxiv.py                   # arxiv コマンド
+│   ├── arxiv.py                   # arxiv コマンド（HF Daily Papers→翻訳→Notion/Slack・週次ページ）
+│   ├── arxiv_search.py            # arxiv-search コマンド（arXiv キーワード検索・手動）
 │   ├── medium.py                  # medium コマンド
 │   ├── medium_translate.py        # medium-translate コマンド
 │   ├── arxiv_translate.py         # arxiv-translate コマンド（PDF→Markdown→翻訳→Notion）
@@ -93,18 +98,24 @@ minitools/
 │   ├── __init__.py
 │   ├── conftest.py               # テスト共通フィクスチャ
 │   ├── test_arxiv_weekly.py      # ArXiv週次ダイジェストテスト
+│   ├── test_arxiv_search.py      # arxiv-search コマンドテスト
+│   ├── test_article_dates.py     # 記事の元日付抽出テスト
 │   ├── test_duplicate_detector.py # 重複検出テスト
 │   ├── test_arxiv_scraper.py     # ArXiv PDFスクレイパーテスト（一般PDF/HTML振り分け含む）
 │   ├── test_web_document.py      # WebDocumentConverter テスト
 │   ├── test_full_text_translator.py # 全文翻訳テスト
 │   ├── test_google_alerts_translate.py # Google Alerts全文翻訳テスト
 │   ├── test_hf_papers.py         # Hugging Face Papersリサーチテスト
+│   ├── test_hf_daily_selector.py # HF Daily Papers 選定テスト
+│   ├── test_hf_weekly.py         # 今週の注目論文ページテスト
 │   ├── test_langchain_gemini.py  # LangChain Gemini クライアントテスト
 │   ├── test_markdown_converter.py # Markdown変換テスト
 │   ├── test_medium_collector.py  # Medium収集テスト
 │   ├── test_medium_scraper.py    # Mediumスクレイパーテスト
 │   ├── test_medium_translate.py  # Medium全文翻訳テスト
 │   ├── test_notion_arxiv.py      # Notion ArXivテスト
+│   ├── test_notion_arxiv_hf.py   # Notion ArXiv DB の HF プロパティテスト
+│   ├── test_network_wait.py      # ネットワーク待ちテスト
 │   ├── test_notion_block_builder.py # Notionブロックビルダーテスト
 │   ├── test_notion_publisher.py  # Notionパブリッシャーテスト
 │   ├── test_notion_upload_file.py # Notion File Upload APIテスト
@@ -112,10 +123,12 @@ minitools/
 │   ├── test_slack_arxiv_format.py # Slack ArXivフォーマットテスト
 │   ├── test_slack_publisher.py   # Slackパブリッシャーテスト
 │   ├── test_trend_researcher.py  # トレンドリサーチテスト
+│   ├── test_translation_failure_handling.py # 翻訳失敗時の記事単位スキップテスト
 │   ├── test_slack_x_trend_format.py # X トレンドSlackフォーマットテスト
 │   ├── test_x_trend_collector.py # X トレンド収集テスト
 │   ├── test_x_trend_processor.py # X トレンド処理テスト
-│   └── test_weekly_digest.py     # 週次/日次ダイジェストテスト
+│   ├── test_weekly_digest.py     # 週次/日次ダイジェストテスト
+│   └── test_youtube_email.py     # YouTube URL 抽出テスト
 │
 ├── pyproject.toml                 # プロジェクト設定・依存関係
 ├── settings.yaml.example          # 設定ファイルテンプレート
@@ -146,7 +159,7 @@ minitools/
 
 | モジュール | 役割 | 外部サービス |
 |-----------|------|------------|
-| `arxiv.py` | ArXiv APIから論文を検索・取得 | ArXiv API, feedparser |
+| `arxiv.py` | ArXiv APIから論文を検索・取得（手動の `arxiv-search` が使う） | ArXiv API, feedparser |
 | `medium.py` | Gmail経由でMedium Daily Digestを取得 | Gmail API, Jina AI Reader |
 | `google_alerts.py` | Gmail経由でGoogle Alertsを取得 | Gmail API |
 | `youtube.py` | YouTube動画の字幕取得（優先）・音声ダウンロード・文字起こし（Whisperフォールバック） | yt-dlp, MLX Whisper |
@@ -183,7 +196,7 @@ Ollama/OpenAIを統一的に扱うための抽象化レイヤー。
 | モジュール | 役割 | 外部サービス |
 |-----------|------|------------|
 | `trend.py` | AI/機械学習分野のトレンド調査 | Tavily API |
-| `hf_papers.py` | Hugging Face Daily Papersから注目論文を取得 | Hugging Face Papers |
+| `hf_papers.py` | Hugging Face Daily Papers の日別取得（`get_daily_papers`）と upvote の取り直し（`get_papers_stats`） | Hugging Face Papers API |
 
 #### scrapers/ (スクレイピング)
 
@@ -192,6 +205,7 @@ Playwrightを使用して外部サイトからコンテンツを取得し、構�
 | モジュール | 役割 | 外部サービス |
 |-----------|------|------------|
 | `medium_scraper.py` | Playwright経由でMedium記事の全文HTMLを取得 | Playwright (CDP/スタンドアロン) |
+| `article_dates.py` | 記事HTMLから公開日・更新日を抽出（JSON-LD 優先・OpenGraph 補完、`scrape-medium --emit-meta` 用） | - |
 | `markdown_converter.py` | Medium記事HTMLを構造化Markdownに変換 | BeautifulSoup4 |
 | `arxiv_scraper.py` | ArXiv PDFをダウンロードしmarker-pdfでMarkdownに変換。非 arXiv の一般PDF/HTMLも受け付ける | httpx, marker-pdf, feedparser, PyMuPDF |
 | `web_document.py` | 技術系Webページの HTML を翻訳用 Markdown に変換（`WebDocumentConverter`、文書ID導出） | beautifulsoup4, markdownify |
@@ -209,6 +223,8 @@ LLMを使用してコンテンツを処理するモジュール群。
 | `vlm_parse_repairer.py` | marker-pdfのパース欠陥（壊れた表・孤立図）をVLMで修復 | multimodal LLM (Gemini/OpenAI) |
 | `weekly_digest.py` | 週次ダイジェスト生成 | LLM抽象化レイヤー経由 |
 | `arxiv_weekly.py` | ArXiv週次ダイジェスト生成 | LLM抽象化レイヤー経由 |
+| `hf_daily_selector.py` | HF Daily Papers の upvote による選定と、翻訳・Notion 保存に渡す論文 dict への変換 | なし（純粋関数） |
+| `hf_weekly.py` | 保存済みの HF 注目論文を upvote 順に並べた「今週の注目論文」ページを作る | なし（Notion 経由） |
 | `x_trend.py` | X トレンド処理・AI関連フィルタ・Tweet要約 | LLM抽象化レイヤー経由 |
 | `youtube_summary.py` | YouTube文字起こしから要約文+ポイント生成 | LLM抽象化レイヤー経由（デフォルトGemini） |
 | `duplicate_detector.py` | 類似記事検出・重複除去 | Embedding抽象化レイヤー経由 |
@@ -240,7 +256,8 @@ LLMを使用してコンテンツを処理するモジュール群。
 
 | スクリプト | コマンド | 用途 |
 |-----------|---------|-----|
-| `arxiv.py` | `arxiv` | ArXiv論文の検索・翻訳・保存 |
+| `arxiv.py` | `arxiv` | HF Daily Papers で upvote の多い論文を選び、翻訳・要約して Notion/Slack へ。土曜の実行では「今週の注目論文」ページも作る |
+| `arxiv_search.py` | `arxiv-search` | arXiv のキーワード検索（手動実行・保存先は同じ ArXiv DB） |
 | `medium.py` | `medium` | Medium記事の収集・翻訳・保存 |
 | `medium_translate.py` | `medium-translate` | Medium記事の全文翻訳・Notion追記 |
 | `arxiv_translate.py` | `arxiv-translate` | ArXiv論文PDF・一般PDF・Webページの全文翻訳・Notion保存（parse / translate / upload / repair サブコマンド） |
@@ -403,6 +420,7 @@ api_key = Config.get_api_key('new_service')  # NEW_SERVICE_API_KEY を検索
 ```toml
 [project.scripts]
 arxiv = "scripts.arxiv:main"
+arxiv-search = "scripts.arxiv_search:main"
 medium = "scripts.medium:main"
 medium-translate = "scripts.medium_translate:main"
 google-alerts = "scripts.google_alerts:main"

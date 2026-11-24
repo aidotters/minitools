@@ -4,58 +4,63 @@
 
 ## ツール別シーケンス図
 
-### ArXiv 処理フロー
+### ArXiv 処理フロー（HF Daily Papers）
+
+毎日の `uv run arxiv` は、キーワード検索ではなく Hugging Face Daily Papers の upvote で保存する論文を選ぶ。
 
 ```mermaid
 sequenceDiagram
     participant User
     participant CLI as scripts/arxiv.py
-    participant AC as ArxivCollector
-    participant ArXiv as ArXiv API
+    participant NET as wait_for_network
+    participant HFR as HFPapersResearcher
+    participant HF as HF Daily Papers API
+    participant SEL as hf_daily_selector
     participant TR as Translator
-    participant Ollama
     participant NP as NotionPublisher
     participant Notion
     participant SP as SlackPublisher
     participant Slack
 
-    User->>CLI: arxiv --keywords "LLM" --date 2024-01-15
-    CLI->>CLI: 日付範囲計算（月曜日は3日間）
+    User->>CLI: arxiv [--date 2026-11-20]（既定は昨日・JST）
+    CLI->>NET: 名前解決を待つ（huggingface.co / hooks.slack.com・最大180秒）
+    NET-->>CLI: OK（タイムアウトなら exit 1）
 
-    CLI->>AC: search(queries, start_date, end_date)
-    AC->>ArXiv: GET /api/query
-    ArXiv-->>AC: feedparser結果
-    AC-->>CLI: papers[]
+    CLI->>HFR: get_daily_papers(date, limit=100)
+    HFR->>HF: GET /api/daily_papers?date=...
+    HF-->>HFR: items[]（失敗時は空リスト）
+    HFR-->>CLI: items[]
+
+    CLI->>SEL: build_daily_selection(items, date, min_upvotes, max_papers)
+    SEL-->>CLI: papers[]（upvote 多い順・既定 10 以上の上位 7 件）
 
     loop 各論文
         CLI->>TR: translate_with_summary(title, abstract)
-        TR->>Ollama: chat(model, prompt)
-        Ollama-->>TR: {japanese_title, japanese_summary}
-        TR-->>CLI: 翻訳結果
+        TR-->>CLI: {japanese_title, japanese_summary}
     end
 
     alt Notion保存
+        CLI->>NP: ensure_arxiv_properties(database_id)
+        NP->>Notion: 足りない HF 系プロパティを追加
         CLI->>NP: batch_save_articles(database_id, papers)
-        loop 各論文（並列、max=3）
-            NP->>Notion: query(database_id, url)
-            Notion-->>NP: 重複チェック結果
-            opt 新規の場合
-                NP->>Notion: pages.create()
-                Notion-->>NP: page_id
-            end
-        end
+        NP->>Notion: 重複チェック → pages.create()
         NP-->>CLI: {success, skipped, failed}
     end
 
     alt Slack送信
-        CLI->>SP: send_articles(papers, date, title)
+        CLI->>SP: send_articles(papers, date, "Hugging Face 注目論文")
         SP->>Slack: POST webhook
-        Slack-->>SP: 200 OK
-        SP-->>CLI: true
+    end
+
+    opt 対象日が金曜（土曜の実行）かつ Notion 有効、または --weekly-only
+        CLI->>CLI: create_weekly_page(publisher, researcher, database_id, date)
+        Note over CLI: hf_weekly: その週の論文を query_arxiv_by_hf_date で集め、<br/>get_papers_stats で upvote を取り直して上位10件を<br/>DB の親ページ配下に「今週の注目論文」子ページとして作成
     end
 
     CLI-->>User: 処理完了
 ```
+
+キーワードで探したいときは手動の `uv run arxiv-search`（`scripts/arxiv_search.py`）を使う。こちらは従来どおり `ArxivCollector` で arXiv API を検索し、同じ ArXiv Notion DB へ保存する。
 
 ### Medium Daily Digest 処理フロー
 
@@ -799,6 +804,10 @@ classDiagram
         +find_page_by_url(database_id, url) Optional~PageInfo~
         +append_blocks(page_id, blocks)
         +update_page_properties(page_id, properties)
+        +create_child_page(parent_page_id, title, blocks)
+        +ensure_arxiv_properties(database_id)
+        +get_database_parent_page_id(database_id)
+        +query_arxiv_by_hf_date(database_id, start, end)
         -_normalize_url_by_source(url)
         -_build_article_properties(article_data)
         -_build_arxiv_properties(article_data)
@@ -926,6 +935,7 @@ classDiagram
         +__aexit__()
         +get_paper_stats(arxiv_id) HFPaperStats
         +get_papers_stats(arxiv_ids) dict
+        +get_daily_papers(date, limit) list
     }
 
     class ArxivWeeklyProcessor {

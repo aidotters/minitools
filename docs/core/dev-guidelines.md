@@ -225,6 +225,37 @@ async def batch_save_articles(self, database_id: str, articles: List[Dict],
     return stats
 ```
 
+### launchd ジョブの起動時ネットワーク待機
+
+スリープ復帰直後は DNS が未解決のことがあり、そのまま処理すると「0件」の誤通知が出る。定期ジョブ（`arxiv` / `arxiv-search` / `google-alerts` / `google-alert-daily-digest` / `medium` / `x-trend` / `youtube-mail-digest`）は処理の最初に `wait_for_network()` を呼び、タイムアウトしたら通知を送らずに exit 1 で終える:
+
+```python
+from minitools.utils.network import wait_for_network
+
+if not wait_for_network(["huggingface.co", "hooks.slack.com"]):
+    logger.error("ネットワークに接続できないため中止します")
+    sys.exit(1)
+```
+
+新しい定期ジョブを足すときも、使う外部ホストを渡して同じ形で呼ぶ。
+
+### 翻訳失敗を例外で伝える（原文を返さない）
+
+全文翻訳（`FullTextTranslator`）は全リトライに失敗したら英語の原文を返さず `TranslationError` を送出する。原文を返すと呼び出し側が翻訳済みとして Notion に保存してしまうため。
+
+- 課金・認証系（402 / 前払いクレジット切れ / API キー無効 / `PERMISSION_DENIED`）は `is_fatal_llm_error()` が判定し、リトライせず `fatal=True` で即失敗。429 は通常どおりリトライする
+- 呼び出し側は記事単位の失敗として扱う。失敗した記事は Notion に本文を追記せず、`Translated` も立てない（次回の実行で再挑戦できる）
+- `fatal` 属性は呼び出し側で打ち切りを判断するための情報。いまの呼び出し側（`arxiv-translate` の translate ステップなど）はまだ見ておらず、記事単位の失敗として数えるだけ
+
+```python
+try:
+    translated = await translator.translate(markdown)
+except TranslationError as e:
+    # translated.md を書かない（書くと次回「翻訳済み」としてスキップされる）
+    logger.error(f"Translation failed: {url}: {e}")
+    return "failed"
+```
+
 ## ログ出力規則
 
 ### ColoredFormatter の使用

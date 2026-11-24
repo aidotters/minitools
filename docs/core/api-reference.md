@@ -6,7 +6,7 @@
 
 ### ArxivCollector
 
-ArXiv論文を収集するクラス。
+ArXiv論文を収集するクラス。手動実行の `arxiv-search`（キーワード検索）で使う。毎日の `arxiv` は HF Daily Papers を使い、このクラスは使わない。
 
 **ファイル:** `minitools/collectors/arxiv.py`
 
@@ -933,7 +933,7 @@ if trends:
 
 ### HFPapersResearcher
 
-HuggingFace Papers APIを使用して論文のupvote数・コメント数を取得するクラス。
+HuggingFace Papers API を使用して、Daily Papers の一覧と論文の upvote 数・コメント数を取得するクラス。
 
 **ファイル:** `minitools/researchers/hf_papers.py`
 
@@ -959,6 +959,20 @@ class HFPapersResearcher:
 
     async def __aenter__(self) -> "HFPapersResearcher": ...
     async def __aexit__(self, ...): ...
+
+    async def get_daily_papers(self, date: str, limit: int = 100) -> list[dict]:
+        """
+        HF Daily Papers の指定日の一覧を取得（毎日の `arxiv` が使う）
+
+        Args:
+            date: 対象日（YYYY-MM-DD）
+            limit: 最大取得件数
+
+        Returns:
+            Daily Papers のアイテム（`paper` に id・title・summary・upvotes・
+            ai_summary・ai_keywords・githubRepo などを持つ dict）のリスト。
+            取得失敗時は空リスト
+        """
 
     async def get_paper_stats(self, arxiv_id: str) -> HFPaperStats:
         """
@@ -997,6 +1011,7 @@ async with HFPapersResearcher(max_concurrent=5) as researcher:
 - 404（HF未登録）: `HFPaperStats(upvotes=0, found_on_hf=False)` を返す
 - 429/5xx: exponential backoff（2s, 4s, 8s）で最大3回リトライ
 - リトライ後も失敗: `HFPaperStats(upvotes=0)` をデフォルト返却
+- `get_daily_papers` は 429/5xx を同じくリトライし、最後まで失敗したら空リストを返す（例外は投げない）
 
 ---
 
@@ -1296,6 +1311,33 @@ if markdown:
     metadata = JinaReader.extract_metadata(markdown)
     print(metadata["title"], metadata["published_at"])
 ```
+
+---
+
+### article_dates（記事の元日付）
+
+`scrape-medium --emit-meta` が、記事ページの JSON-LD と OpenGraph から公開日・更新日を取り出して YAML フロントマターにするための純関数群（Playwright 非依存）。
+
+**ファイル:** `minitools/scrapers/article_dates.py`
+
+```python
+class ArticleDates(TypedDict):
+    published_at: Optional[str]      # YYYY-MM-DD or None
+    last_modified: Optional[str]     # YYYY-MM-DD or None
+    published_at_source: str         # "html-meta" | "unknown"
+    last_modified_source: str        # "html-meta" | "unknown"
+
+def empty_dates() -> ArticleDates: ...
+def normalize_iso_date(value: Optional[str]) -> Optional[str]:
+    """ISO 8601 の日時文字列を YYYY-MM-DD にする（読めなければ None）"""
+def extract_dates_from_signals(
+    jsonld_pairs: list[dict],
+    og_published: Optional[str] = None,
+    og_modified: Optional[str] = None,
+) -> ArticleDates: ...
+```
+
+JSON-LD（`datePublished` / `dateModified`）を正本とし、OpenGraph の `article:published_time` は JSON-LD が無いときだけ使う（OpenGraph が更新時刻を指す例を実測したため）。取れなかった項目は `unknown` として出す。
 
 ---
 
@@ -1637,9 +1679,56 @@ uv run google-alert-weekly-digest --no-dedup      # 類似記事除去をスキ�
 
 ---
 
+### hf_daily_selector（HF Daily Papers の選定）
+
+毎日の `arxiv` が、HF Daily Papers の生データから保存する論文を選び、翻訳・Notion 保存に渡す論文 dict に変換する純粋関数群。
+
+**ファイル:** `minitools/processors/hf_daily_selector.py`
+
+| 関数 | シグネチャ | 説明 |
+|------|-----------|------|
+| `select_top_papers` | `(items, min_upvotes=10, max_papers=7) -> list[dict]` | arXiv ID で重複を除き、upvote が下限以上のものを upvote・コメント数の多い順に最大 `max_papers` 件 |
+| `to_paper_dict` | `(item, hf_date, focus_keywords=DEFAULT_FOCUS_KEYWORDS) -> dict` | 論文 dict（title, url, abstract, authors, published, updated, arxiv_id, hf_upvotes, hf_url, hf_ai_summary, hf_keywords, hf_focus, hf_date, あれば github_url・github_stars）にする |
+| `build_daily_selection` | `(items, hf_date, min_upvotes, max_papers, focus_keywords) -> list[dict]` | 選定と変換をまとめて行う |
+| `is_focus_paper` | `(item, focus_keywords) -> bool` | タイトル・要旨・ai_keywords に注目分野の語が単語単位で含まれるか（大文字小文字を区別しない） |
+| `sanitize_tags` | `(keywords, limit=5) -> list[str]` | ai_keywords を Notion の multi_select に入る形へ（カンマ除去・100文字以内・重複除去） |
+| `rank_weekly` | `(papers, top_n=10) -> list[dict]` | 週の論文を upvote の多い順に `top_n` 件 |
+
+既定値は `DEFAULT_MIN_UPVOTES=10`・`DEFAULT_MAX_PAPERS=7`・`DEFAULT_FOCUS_KEYWORDS`（LLM / large language model / language model / RAG / retrieval-augmented / agent / agentic / fine-tuning など）。実行時は `settings.yaml` の `defaults.arxiv.{min_upvotes, max_papers, focus_keywords}` と CLI 引数が優先する。
+
+---
+
+### hf_weekly（今週の注目論文ページ）
+
+その週に保存した HF 注目論文を upvote の多い順に並べ、arXiv DB の親ページ配下に子ページ「今週の注目論文（開始日〜終了日）」を作る。ブロックの組み立ては純関数。
+
+**ファイル:** `minitools/processors/hf_weekly.py`
+
+| 関数 | シグネチャ | 説明 |
+|------|-----------|------|
+| `week_range` | `(end: date, days=7) -> (str, str)` | `end` を含む直近 `days` 日（YYYY-MM-DD・両端含む） |
+| `weekly_title` | `(start, end) -> str` | `今週の注目論文（start〜end）` |
+| `build_weekly_blocks` | `(papers, start, end) -> list[dict]` | 順位・【注目分野】の印・upvote・HF掲載日・日本語要約・arXiv / Hugging Face / GitHub / Notion へのリンクの本文ブロック |
+| `create_weekly_page` | `async (publisher, researcher, database_id, end, top_n=10) -> str \| None` | 週の論文を `query_arxiv_by_hf_date` で集め、`get_papers_stats` で upvote を取り直して「HF Upvotes」を更新し、`rank_weekly` で並べて `create_child_page` で作る |
+
+`arxiv` は対象日が金曜日（土曜の実行）で Notion 保存が有効なときにこのページを作る。`--weekly-only` で週次ページだけ、`--no-weekly` で作らない。
+
+---
+
 ### FullTextTranslator
 
 記事全文を構造を維持しながら日本語に翻訳するクラス。見出しベースのチャンク分割とリトライ機能を備える。
+
+翻訳に失敗したときは原文を返さず `TranslationError` を投げる（原文を返すと、呼び出し側が翻訳済みとして Notion に保存してしまうため）。課金・認証エラー（402・前払いクレジット不足・API キー不正）は `fatal=True` で即座に投げ、429 はリトライする。呼び出し側はその記事だけを失敗として扱い、Notion への追記と `Translated` の更新を行わない。
+
+```python
+class TranslationError(Exception):
+    def __init__(self, message: str, *, fatal: bool = False): ...
+    fatal: bool  # リトライしても回復しない失敗なら True
+
+def is_fatal_llm_error(error: BaseException) -> bool:
+    """課金・認証など回復しない LLM エラーか判定する"""
+```
 
 **ファイル:** `minitools/processors/full_text_translator.py`
 
@@ -2376,7 +2465,57 @@ class NotionPublisher:
         Returns:
             file_upload_id (UUID文字列)。失敗時はNone。
         """
+
+    async def create_child_page(
+        self,
+        parent_page_id: str,
+        title: str,
+        blocks: List[Dict[str, Any]],
+    ) -> Optional[str]:
+        """
+        親ページの配下に子ページを作り、本文ブロックを書き込む。
+        子ページは title 以外の properties を設定できない（DB 用プロパティを
+        渡すと 400）ので、メタ情報はすべて本文ブロックとして渡す。
+        `youtube-mail-digest` と「今週の注目論文」ページで使う。
+
+        Returns:
+            作成したページ ID。失敗時は None。
+        """
+
+    async def ensure_arxiv_properties(self, database_id: str) -> bool:
+        """
+        arXiv DB に HF 由来のプロパティ（ARXIV_HF_PROPERTIES）が無ければ追加する。
+        既にあるプロパティは触らない。失敗しても保存を止めないよう例外は投げず
+        False を返す。
+        """
+
+    async def get_database_parent_page_id(self, database_id: str) -> Optional[str]:
+        """データベースの親ページ ID を返す（親がページでなければ None）"""
+
+    async def query_arxiv_by_hf_date(
+        self, database_id: str, start: str, end: str
+    ) -> List[Dict[str, Any]]:
+        """
+        HF掲載日が start〜end（YYYY-MM-DD・両端含む）のページを返す。
+
+        Returns:
+            page_id, title, japanese_summary, url, hf_url, github_url,
+            hf_upvotes, arxiv_id, hf_date, hf_focus を持つ dict のリスト
+        """
 ```
+
+**arXiv DB の HF 由来プロパティ（`ARXIV_HF_PROPERTIES`）:**
+
+| プロパティ | 型 | 中身 |
+|-----------|----|------|
+| HF Upvotes | number | Hugging Face の upvote 数（週次ページ作成時に取り直す） |
+| HF URL | url | `https://huggingface.co/papers/{arxiv_id}` |
+| GitHub | url | 論文のリポジトリ（あれば） |
+| GitHub Stars | number | リポジトリのスター数（あれば） |
+| HF要約 | rich_text | HF が付けた AI 要約（`ai_summary`） |
+| タグ | multi_select | HF の `ai_keywords`（最大5件・カンマ除去・100文字以内） |
+| 注目分野 | checkbox | LLM・RAG・エージェント・ファインチューニングの語を含むか |
+| HF掲載日 | date | Daily Papers の対象日 |
 
 **使用例:**
 ```python
@@ -2965,6 +3104,24 @@ logger.info("処理開始")
 logger.warning("警告メッセージ")
 logger.error("エラー発生")
 ```
+
+---
+
+### network（ネットワーク待ち）
+
+**ファイル:** `minitools/utils/network.py`
+
+```python
+def wait_for_network(
+    hosts: list[str], timeout: float = 180.0, interval: float = 5.0
+) -> bool:
+    """
+    指定ホストの名前解決（socket.getaddrinfo(host, 443)）が通るまで待つ。
+    全ホストが解決できたら True、timeout 秒を過ぎたら False。
+    """
+```
+
+launchd の定期ジョブ（`arxiv` / `arxiv-search` / `google-alerts` / `medium` / `x-trend` / `google-alert-daily-digest` / `youtube-mail-digest`）が処理の最初に呼ぶ。スリープ復帰直後は DNS が引けず、そのまま進むと「0件」の誤った通知が出るため。False なら exit 1 で中止する。
 
 ---
 

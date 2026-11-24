@@ -10,6 +10,7 @@ minitoolsは、複数のソースからコンテンツを収集し、Ollama LLM�
 flowchart TB
     subgraph Sources["データソース"]
         ArXiv["ArXiv API"]
+        HFAPI["HF Daily Papers API"]
         Gmail["Gmail API"]
         YouTube["YouTube"]
         NotionDB["Notion Database"]
@@ -51,6 +52,7 @@ flowchart TB
     subgraph Processors["処理レイヤー"]
         TR["Translator"]
         SU["Summarizer"]
+        HFS["hf_daily_selector / hf_weekly"]
         FTT["FullTextTranslator"]
         VPR["VlmParseRepairer"]
         WDP["DigestProcessor (alias: WeeklyDigestProcessor)"]
@@ -78,6 +80,9 @@ flowchart TB
     end
 
     ArXiv --> AC
+    HFAPI --> HFR
+    HFR --> HFS
+    HFS --> TR
     Gmail --> MC
     Gmail --> GAC
     YouTube --> YC
@@ -137,6 +142,7 @@ flowchart TB
 flowchart TB
     subgraph scripts["scripts/"]
         arxiv["arxiv.py"]
+        arxiv_search["arxiv_search.py"]
         medium["medium.py"]
         medium_translate["medium_translate.py"]
         arxiv_translate["arxiv_translate.py"]
@@ -169,6 +175,8 @@ flowchart TB
     subgraph processors["minitools/processors/"]
         TR["Translator"]
         SU["Summarizer"]
+        HFS["hf_daily_selector"]
+        HFW["hf_weekly"]
         FTT["FullTextTranslator"]
         VPR["VlmParseRepairer"]
         WDP["DigestProcessor (alias: WeeklyDigestProcessor)"]
@@ -191,12 +199,24 @@ flowchart TB
     subgraph utils["minitools/utils/"]
         Config["Config"]
         Logger["Logger"]
+        Net["network (wait_for_network)"]
     end
 
-    arxiv --> AC
+    arxiv --> Net
+    arxiv --> HFR
+    arxiv --> HFS
+    arxiv --> HFW
     arxiv --> TR
     arxiv --> NP
     arxiv --> SP
+    HFW --> HFR
+    HFW --> NP
+
+    arxiv_search --> Net
+    arxiv_search --> AC
+    arxiv_search --> TR
+    arxiv_search --> NP
+    arxiv_search --> SP
 
     medium --> MC
     medium --> TR
@@ -279,20 +299,33 @@ flowchart TB
 
 ## データフロー図
 
-### ArXiv 論文処理フロー
+### ArXiv 論文処理フロー（HF Daily Papers）
+
+毎日の `uv run arxiv` は、キーワード検索ではなく Hugging Face Daily Papers の upvote で保存する論文を選ぶ。
 
 ```mermaid
 flowchart LR
-    A["ArXiv API"] --> B["feedparser解析"]
-    B --> C["論文メタデータ"]
+    W["wait_for_network\n(huggingface.co / hooks.slack.com)"] --> A["HFPapersResearcher\nget_daily_papers(date)"]
+    A --> B["build_daily_selection\n(upvote下限・上位N件・注目分野判定)"]
+    B --> C["論文dict\n(hf_upvotes / hf_keywords / hf_focus 等)"]
     C --> D["Translator"]
     D --> E["日本語タイトル/要約"]
     E --> F{"保存先"}
-    F -->|Notion| G["NotionPublisher"]
-    F -->|Slack| H["SlackPublisher"]
-    G --> I["Notion DB"]
+    F -->|Notion| G["NotionPublisher\nensure_arxiv_properties →\nbatch_save_articles"]
+    F -->|Slack| H["SlackPublisher\n「Hugging Face 注目論文」"]
+    G --> I["ArXiv Notion DB"]
     H --> J["Slack Channel"]
+    G -.->|"対象日が金曜（土曜の実行）"| K["create_weekly_page\n(upvote取り直し → 上位10件)"]
+    K --> L["子ページ「今週の注目論文」"]
 ```
+
+- 対象日は既定で前日（JST）。選定は既定で upvote 10 以上の上位 7 件（`defaults.arxiv.min_upvotes` / `max_papers`）。
+- タイトル・要旨・`ai_keywords` に `focus_keywords`（LLM・RAG・agent・fine-tuning 等）が単語境界で含まれる論文は「注目分野」として印を付ける。選定条件には使わない。
+- `ensure_arxiv_properties` は DB に HF 系のプロパティ（HF Upvotes・HF URL・GitHub・GitHub Stars・HF要約・タグ・注目分野・HF掲載日）が無ければ足す。足せなくても保存は止めない。
+- 週次ページは、対象日が金曜（`WEEKLY_BASE_WEEKDAY=4`、つまり土曜の実行）で Notion 保存が有効なときに作る。`--weekly-only` で週次だけ、`--no-weekly` で作らない。掲載日以降も upvote は伸びるので、ランキングの前に `get_papers_stats` で取り直し、変わった値は Notion の「HF Upvotes」も更新する。子ページは ArXiv DB の親ページの下に作る。
+- 論文が 0 件の日も Slack には通知する。
+
+arXiv のキーワード検索は手動の `uv run arxiv-search`（`ArxivCollector`）に分けた。保存先は同じ ArXiv Notion DB。
 
 ### Medium Daily Digest 処理フロー
 
@@ -563,7 +596,7 @@ page = client.pages.create(
 
 | ソース | Title | URL | Summary | その他 |
 |-------|-------|-----|---------|-------|
-| ArXiv | タイトル | URL | 日本語訳 | 公開日, 概要, HF Upvotes (Number) |
+| ArXiv | タイトル | URL | 日本語訳 | 公開日, 概要, HF Upvotes (Number), HF URL, GitHub, GitHub Stars (Number), HF要約, タグ (Multi-select), 注目分野 (Checkbox), HF掲載日 (Date)。HF 系は `ensure_arxiv_properties` が無ければ足す |
 | Medium | Title | URL | Summary | Japanese Title, Author, Date, Claps (Number), Translated (Checkbox) |
 | Google Alerts | Title (日本語) | URL | Summary | Original Title, Source, Tags |
 
@@ -622,27 +655,27 @@ response = client.search(
 
 ### HuggingFace Papers API
 
-ArXiv週次ダイジェストで論文のコミュニティ注目度（upvote数・コメント数）を取得するために使用。
+2 つのエンドポイントを使う。どちらも認証不要の公開 API。
 
-**エンドポイント:** `GET https://huggingface.co/api/papers/{arxiv_id}`
+| エンドポイント | 用途 | メソッド |
+|---|---|---|
+| `GET https://huggingface.co/api/daily_papers?date=YYYY-MM-DD&limit=N` | 毎日の `arxiv` でその日の Daily Papers 一覧を取る | `get_daily_papers(date, limit=100)` |
+| `GET https://huggingface.co/api/papers/{arxiv_id}` | 論文ごとの upvote・コメント数（ArXiv 週次ダイジェスト、週次ページの upvote 取り直し） | `get_papers_stats(arxiv_ids)` |
 
 **特徴:**
-- 認証不要（公開API）
-- arXiv IDで直接検索可能
-- 未登録論文は404（upvotes=0として処理）
+- Daily Papers の各アイテムは `paper` の下に `id`（arXiv ID）・`title`・`summary`・`upvotes`・`authors`・`ai_summary`・`ai_keywords`・`githubRepo` 等を持つ
+- `get_daily_papers` は取得に失敗すると空リストを返す（呼び出し側は 0 件として扱う）
+- `/api/papers/{id}` で未登録の論文は 404（upvotes=0・`found_on_hf=False` として処理）
 
 **連携パターン:**
 ```python
 from minitools.researchers import HFPapersResearcher
 
 async with HFPapersResearcher(max_concurrent=5) as researcher:
+    items = await researcher.get_daily_papers("2026-11-20")
     stats = await researcher.get_papers_stats(arxiv_ids)
     # stats: {arxiv_id: HFPaperStats(upvotes, num_comments, found_on_hf)}
 ```
-
-**レスポンスフィールド:**
-- `upvotes`: 論文のupvote数
-- `numComments`: コメント数
 
 ### TwitterAPI.io
 
@@ -856,5 +889,7 @@ flowchart TB
 |---------|--------------|
 | Jina Reader ブロック | メールのプレビューテキストを使用 |
 | 記事コンテンツ取得失敗 | スニペットを使用 |
-| 翻訳エラー | 元のテキストを返却 |
+| 翻訳エラー（`Translator`・タイトル/要約） | 元のテキストを返却 |
+| 翻訳エラー（`FullTextTranslator`・全文） | `TranslationError` を送出し、その記事だけ失敗にする（Notion へ追記せず `Translated` も更新しない）。英語の原文は返さない。課金・認証エラーは再試行せず即失敗（`fatal=True`）、429 は再試行 |
+| 起動直後に名前解決できない（スリープ復帰直後） | `wait_for_network()` が最大 180 秒待つ。タイムアウトしたら exit 1 で中止し、誤った「0件」通知を送らない |
 | mlx-whisper 未インストール | エラーメッセージを表示して終了 |
