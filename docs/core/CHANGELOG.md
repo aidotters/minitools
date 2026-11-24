@@ -5,6 +5,8 @@
 ## [Unreleased]
 
 ### Added
+- **ドキュメント一式を現行コードに合わせて更新** (2026-11-24)
+  - `docs/core/` の architecture / api-reference / repo-structure / diagrams / dev-guidelines を、HF Daily Papers 版の `arxiv`・週次ページ・`arxiv-search`・`wait_for_network`・`TranslationError`・`article_dates` に合わせて更新
 - **`arxiv-search` コマンド追加（キーワード検索の手動実行）** (2026-11-24)
   - 毎日の `arxiv` を HF Daily Papers に切り替えたあとも、キーワードで arXiv を直接検索できるように旧処理を独立コマンドとして残した（`scripts/arxiv_search.py`）
   - 引数は旧 `arxiv` と同じ（`--keywords` `--days` `--date` `--max-results` `--notion` `--slack` `--test`）に `--dry-run` を追加。旧「月曜は3日検索」は持ち込まない
@@ -17,6 +19,10 @@
   - `PaperMetadata.source_type`（デフォルト `"arxiv"`、既存 metadata.json 互換）を追加。upload 時の arXiv API フォールバックは arXiv URL のみ
   - 保存先は既存の ArXiv Notion DB。`markdownify` を直接依存に追加
   - テスト: `tests/test_web_document.py` 新規、`tests/test_arxiv_scraper.py` に文書ID・振り分け・PDF メタデータのテストを追加
+- **`scrape-medium --emit-meta`（記事の公開日・更新日メタ）** (2026-06-12)
+  - 新規 `minitools/scrapers/article_dates.py`（JSON-LD の `datePublished`/`dateModified` を正本に、OpenGraph をフォールバックとして日付を抽出）
+  - `--emit-meta` 指定時、本文の前に `published_at` / `last_modified` とその出所の YAML フロントマターを出力（取れないものは `unknown`）。既定は off で従来どおり本文のみ
+  - テスト: `tests/test_article_dates.py`
 - **`youtube-mail-digest` コマンド追加（特定メール内 YouTube 動画の要約配信）** (2026-06-07)
   - 特定送信元のメールに含まれる YouTube 動画を抽出し、字幕優先（無ければ Whisper フォールバック）で日本語の要約文＋ポイント箇条書きを生成、Slack 配信＋Notion 子ページ保存を行う新パイプライン
   - settings.yaml の `youtube_mail_digest.profiles` に「送信元 → 保存先」を複数定義（`from` / `notion_parent_page_id` / `slack_webhook_env` / `slack` / `notion`）。`--profile` で絞り込み、`--no-slack`/`--no-notion` で出力先を実行時上書き（Slackのみ／Notionのみ運用が可能）
@@ -62,6 +68,14 @@
   - launchd 用 plist `scripts/launchd/com.tak.minitools.google-alert-daily-digest.plist` を同梱（毎日 19:00 ローカル時刻）
 
 ### Changed
+- **毎日の `arxiv` を Hugging Face Daily Papers の upvote 選定に切り替え** (2026-11-24)
+  - キーワード検索をやめ、前日分（JST）の HF Daily Papers から upvote の多い論文を選ぶ（既定は upvote 10 以上の上位 7 件・`defaults.arxiv.{min_upvotes,max_papers,focus_keywords,weekly_top}`）
+  - 新規 `minitools/processors/hf_daily_selector.py`（選定・論文 dict への変換・注目分野の判定・タグ整形）と `HFPapersResearcher.get_daily_papers()`（失敗時は空リスト）
+  - Notion の ArXiv DB に HF 系プロパティ8つ（HF Upvotes / HF URL / GitHub / GitHub Stars / HF要約 / タグ / 注目分野 / HF掲載日）を `NotionPublisher.ensure_arxiv_properties()` で自動追加
+  - 土曜の実行（対象日が金曜）で「今週の注目論文」子ページを DB の親ページ配下に作成（`minitools/processors/hf_weekly.py`・upvote を取り直して上位10件）。`--weekly-only` / `--no-weekly` で制御
+  - 新オプション: `--min-upvotes` / `--max-papers` / `--weekly-only` / `--no-weekly`。Slack の見出しは「Hugging Face 注目論文」
+  - テスト: `tests/test_hf_daily_selector.py` / `tests/test_hf_weekly.py` / `tests/test_notion_arxiv_hf.py`
+
 - **X動画リアルタイム翻訳MVPを外部プロジェクトへ分離** (2026-06-21)
   - Chrome拡張機能 + Swift製macOS companionは既存Python CLI群とビルド・テスト・配布単位が異なるため、実装を `/Users/tak/Projects/x-realtime-video-translation` に分離
   - `minitools` 側にはアイデア・設計メモのみを残し、Pythonパッケージ、CLIエントリーポイント、Docker構成には影響を与えない
