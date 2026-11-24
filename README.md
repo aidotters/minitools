@@ -332,6 +332,20 @@ uv run arxiv --slack
 uv run arxiv --test
 ```
 
+#### arXivキーワード検索（手動実行）
+```bash
+# 毎日の arxiv とは別に、キーワードで arXiv を直接検索したいときだけ使う
+# 保存先は arxiv と同じ Notion DB（URL が既にあればスキップ）
+uv run arxiv-search --keywords "LLM" "agent" --date 2026-11-20 --days 3
+
+# 検索結果を表示するだけ（翻訳・保存・送信なし）
+uv run arxiv-search --keywords "diffusion" --dry-run
+
+# Notionのみ / Slackのみ
+uv run arxiv-search --keywords "RAG" --notion
+uv run arxiv-search --keywords "RAG" --slack
+```
+
 #### Medium Daily Digest
 ```bash
 # 今日のダイジェストを処理

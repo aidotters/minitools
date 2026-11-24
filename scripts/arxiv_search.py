@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""
+arXiv キーワード検索（手動実行用）。
+
+毎日の `arxiv` コマンドは Hugging Face Daily Papers の注目論文に切り替えたので、
+キーワードで arXiv を直接検索したいときだけこのコマンドを使う。
+
+    uv run arxiv-search --keywords "LLM" "agent" --date 2026-11-20 --days 3
+"""
+
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import argparse
+import asyncio
+import logging
+from datetime import datetime, timedelta
+
+import pytz
+from dotenv import load_dotenv
+
+from minitools.collectors.arxiv import ArxivCollector
+from minitools.processors.translator import Translator
+from minitools.publishers.notion import NotionPublisher
+from minitools.publishers.slack import SlackPublisher
+from minitools.utils.logger import setup_logger
+from minitools.utils.config import get_config
+from minitools.utils.network import wait_for_network
+
+load_dotenv()
+
+# ロガーは後で初期化（argparseの前には基本設定のみ）
+logger = None
+
+
+DEFAULT_KEYWORDS = ["LLM", "(RAG OR FINETUNING OR AGENT)"]
+DEFAULT_MAX_RESULTS = 50
+
+
+def resolve_date_range(date_str: str, days: int) -> tuple[datetime, datetime]:
+    """基準日から遡る検索期間（両端を含む）を返す。"""
+    if days < 1:
+        raise ValueError("--days は 1 以上を指定してください")
+    end_date = datetime.strptime(date_str, "%Y-%m-%d")
+    start_date = end_date - timedelta(days=days - 1)
+    return start_date, end_date
+
+
+def resolve_outputs(
+    notion: bool, slack: bool, dry_run: bool = False
+) -> tuple[bool, bool]:
+    """(Notion に保存するか, Slack に送るか) を返す。
+
+    フラグなしは両方。--notion / --slack はそれだけ。--dry-run はどちらもしない。
+    """
+    if dry_run:
+        return False, False
+    if not notion and not slack:
+        return True, True
+    return notion, slack
+
+
+def main():
+    """エントリーポイント（同期版）"""
+    asyncio.run(main_async())
+
+
+async def main_async():
+    # デフォルトの基準日（昨日）を計算
+    jst = pytz.timezone("Asia/Tokyo")
+    yesterday = (datetime.now(jst) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    config = get_config()
+    keywords_default = config.get("defaults.arxiv_search.keywords", DEFAULT_KEYWORDS)
+    max_results_default = config.get(
+        "defaults.arxiv_search.max_results", DEFAULT_MAX_RESULTS
+    )
+
+    parser = argparse.ArgumentParser(
+        description="arXiv をキーワードで検索し、翻訳・要約して Notion/Slack へ（手動実行用）"
+    )
+    parser.add_argument(
+        "--keywords",
+        "-q",
+        "--queries",
+        nargs="+",
+        default=keywords_default,
+        help="検索キーワード（複数指定可）",
+    )
+    parser.add_argument("--days", type=int, default=1, help="何日前から検索するか")
+    parser.add_argument(
+        "--date", "-d", type=str, default=yesterday, help="基準日（YYYY-MM-DD形式）"
+    )
+    parser.add_argument(
+        "--max-results",
+        "-r",
+        "--max_results",
+        type=int,
+        default=max_results_default,
+        help="取得する最大論文数",
+    )
+    parser.add_argument("--notion", action="store_true", help="Notionへの保存のみ実行")
+    parser.add_argument("--slack", action="store_true", help="Slackへの送信のみ実行")
+    parser.add_argument("--debug", action="store_true", help="デバッグモードで実行")
+    parser.add_argument(
+        "--test", action="store_true", help="テストモード（最初の1論文のみ処理）"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="検索結果を表示するだけ（翻訳・Notion・Slack はしない）",
+    )
+
+    args = parser.parse_args()
+
+    # 設定ファイルからデフォルトログレベルを取得
+    default_log_level = config.get("logging.level", "INFO").upper()
+
+    # デバッグオプションが指定されている場合は上書き
+    if args.debug:
+        log_level = logging.DEBUG
+    else:
+        log_level = getattr(logging, default_log_level, logging.INFO)
+
+    # ロガーの初期化
+    global logger
+    logger = setup_logger(
+        "scripts.arxiv_search", log_file="arxiv_search.log", level=log_level
+    )
+
+    try:
+        start_date, end_date = resolve_date_range(args.date, args.days)
+    except ValueError as e:
+        parser.error(str(e))
+
+    save_notion, send_slack = resolve_outputs(args.notion, args.slack, args.dry_run)
+
+    # スリープ復帰直後の実行に備え、名前解決できるまで待つ
+    if not wait_for_network(["export.arxiv.org", "hooks.slack.com"]):
+        logger.error("ネットワーク未接続のため処理を中止します")
+        sys.exit(1)
+
+    # コレクターの初期化
+    collector = ArxivCollector()
+
+    # 論文を検索
+    logger.info(
+        f"Searching max {args.max_results} papers from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} with queries: {args.keywords}"
+    )
+    papers = collector.search(
+        queries=args.keywords,
+        start_date=start_date.strftime("%Y%m%d"),
+        end_date=end_date.strftime("%Y%m%d"),
+        max_results=args.max_results,
+    )
+
+    if not papers:
+        logger.info("No papers found")
+    else:
+        logger.info(f"Found {len(papers)} papers")
+
+    if args.dry_run:
+        for i, paper in enumerate(papers, 1):
+            print(f"{i}. {paper['title']}")
+            print(f"   {paper['url']}")
+        logger.info("dry-run のため翻訳・保存・送信はしません")
+        return
+
+    # テストモードの場合は最初の1件のみ処理
+    if args.test and papers:
+        papers = papers[:1]
+        logger.info("テストモード: 最初の1論文のみ処理します")
+
+    # 翻訳と要約
+    translator = Translator()
+    processed_papers = []
+
+    if papers:  # 論文がある場合のみ処理
+        logger.info(f"翻訳・要約処理を開始: {len(papers)}件の論文を処理中...")
+        async with collector:
+            for i, paper in enumerate(papers, 1):
+                try:
+                    logger.info(
+                        f"  論文処理中 ({i}/{len(papers)}): {paper['title'][:60]}..."
+                    )
+
+                    # タイトルと要約を翻訳
+                    result = await translator.translate_with_summary(
+                        title=paper["title"],
+                        content=paper["abstract"],
+                        author=paper["authors"],
+                    )
+
+                    paper["japanese_title"] = result["japanese_title"]
+                    paper["japanese_summary"] = result["japanese_summary"]
+                    processed_papers.append(paper)
+
+                    logger.info(f"    -> 翻訳完了: {result['japanese_title'][:40]}...")
+
+                except Exception as e:
+                    logger.error(
+                        f"    -> 処理エラー ({i}/{len(papers)}): {paper['title'][:50]}... - {e}"
+                    )
+
+    # Notionに保存
+    if save_notion and processed_papers:
+        # 環境変数名の統一（フォールバック対応）
+        database_id = os.getenv("NOTION_ARXIV_DATABASE_ID") or os.getenv("NOTION_DB_ID")
+        if database_id:
+            try:
+                logger.info(
+                    f"Notion保存開始: {len(processed_papers)}件の論文を保存中..."
+                )
+                publisher = NotionPublisher(source_type="arxiv")
+                result = await publisher.batch_save_articles(
+                    database_id, processed_papers
+                )
+                stats = result.get("stats", {})
+                logger.info("=" * 60)
+                logger.info("Notion保存結果:")
+                logger.info(f"  成功: {stats.get('success', 0)}件")
+                logger.info(f"  スキップ (既存): {stats.get('skipped', 0)}件")
+                logger.info(f"  失敗: {stats.get('failed', 0)}件")
+                logger.info("=" * 60)
+            except Exception as e:
+                logger.error(f"Notion保存エラー: {e}")
+        else:
+            logger.warning("NOTION_ARXIV_DATABASE_ID環境変数が設定されていません")
+
+    # Slackに送信（論文が0件でも通知）
+    if send_slack:
+        # 環境変数名の統一（フォールバック対応）
+        webhook_url = os.getenv("SLACK_ARXIV_WEBHOOK_URL") or os.getenv(
+            "SLACK_WEBHOOK_URL"
+        )
+        if webhook_url:
+            try:
+                async with SlackPublisher(webhook_url) as slack:
+                    await slack.send_articles(
+                        processed_papers,
+                        date=end_date.strftime("%Y-%m-%d"),
+                        title=f"arXiv Papers ({', '.join(args.keywords)})",
+                    )
+                logger.info("Sent to Slack")
+            except Exception as e:
+                logger.error(f"Error sending to Slack: {e}")
+
+    logger.info("Processing completed")
+
+
+if __name__ == "__main__":
+    main()

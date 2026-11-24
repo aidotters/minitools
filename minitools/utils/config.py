@@ -79,9 +79,9 @@ class Config:
                 "retry_delay": 2,
             },
             "defaults": {
-                "arxiv": {
+                "arxiv": {"min_upvotes": 10, "max_papers": 7, "weekly_top": 10},
+                "arxiv_search": {
                     "keywords": ["LLM", "(RAG OR FINETUNING OR AGENT)"],
-                    "days_before": 1,
                     "max_results": 50,
                 },
                 "google_alerts": {"hours_back": 6, "max_alerts_per_message": 12},

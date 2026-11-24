@@ -50,6 +50,10 @@ uv run arxiv --min-upvotes 20 --max-papers 5   # 選定条件を上書き
 uv run arxiv --weekly-only --date 2026-11-20   # 週次ページだけ作る（この日を最終日とする7日間）
 uv run arxiv --no-weekly                       # 土曜でも週次ページを作らない
 
+# arXiv キーワード検索（手動実行。毎日の arxiv とは別。保存先は同じ ArXiv Notion DB）
+uv run arxiv-search --keywords "LLM" "agent" --date 2026-11-20 --days 3
+uv run arxiv-search --keywords "diffusion" --dry-run   # 検索結果の表示だけ
+
 # Medium Daily Digest processing (uses email preview by default)
 uv run medium --date 2024-01-15
 uv run medium --use-jina              # Use Jina AI Reader for full article content
@@ -182,7 +186,7 @@ This is a content aggregation and processing system that collects articles from 
 ### Core Components
 
 #### Collectors (`minitools/collectors/`)
-- **ArxivCollector**: Searches ArXiv for papers using specified keywords
+- **ArxivCollector**: Searches ArXiv for papers using specified keywords (used by the manual `arxiv-search` command; the daily `arxiv` uses HF Daily Papers)
 - **MediumCollector**: Extracts articles from Medium Daily Digest emails via Gmail API
   - Uses email preview text by default (faster, avoids Cloudflare blocking)
   - Optionally uses Jina AI Reader (`r.jina.ai`) with `--use-jina` flag
@@ -316,7 +320,7 @@ This is a content aggregation and processing system that collects articles from 
    - `settings.yaml`: Application settings (models, parameters)
 
 3. **Entry Points**: CLI commands via pyproject.toml
-   - `arxiv`, `medium`, `medium-translate`, `arxiv-translate`, `google-alerts`, `google-alerts-translate`, `youtube`, `youtube-mail-digest`, `google-alert-weekly-digest`, `google-alert-daily-digest`, `arxiv-weekly`, `x-trend`, `x-followings`, `scrape-medium`, `discover-notion-medium`
+   - `arxiv`, `arxiv-search`, `medium`, `medium-translate`, `arxiv-translate`, `google-alerts`, `google-alerts-translate`, `youtube`, `youtube-mail-digest`, `google-alert-weekly-digest`, `google-alert-daily-digest`, `arxiv-weekly`, `x-trend`, `x-followings`, `scrape-medium`, `discover-notion-medium`
 
 4. **Error Handling**: Retry logic with exponential backoff for API calls
    - NotionPublisher: `_retry_api_call()` detects rate limit errors and retries with 2s/4s/8s backoff (max 3 retries)

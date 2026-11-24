@@ -5,6 +5,11 @@
 ## [Unreleased]
 
 ### Added
+- **`arxiv-search` コマンド追加（キーワード検索の手動実行）** (2026-11-24)
+  - 毎日の `arxiv` を HF Daily Papers に切り替えたあとも、キーワードで arXiv を直接検索できるように旧処理を独立コマンドとして残した（`scripts/arxiv_search.py`）
+  - 引数は旧 `arxiv` と同じ（`--keywords` `--days` `--date` `--max-results` `--notion` `--slack` `--test`）に `--dry-run` を追加。旧「月曜は3日検索」は持ち込まない
+  - 既定のキーワードと件数は `defaults.arxiv_search`（settings.yaml）。保存先は ArXiv Notion DB
+  - テスト: `tests/test_arxiv_search.py`
 - **`arxiv-translate` が arXiv 以外の一般 PDF・Webページに対応** (2026-10-21)
   - `ArxivScraper.fetch_and_parse()` が非 arXiv URL を1回の GET で取得し、`%PDF-` / content-type で PDF・HTML を判定。PDF は従来どおり marker-pdf + VLM 修復、メタデータは PDF 情報辞書 → Markdown 先頭見出し、Abstract 節から抽出
   - 新規 `WebDocumentConverter`（`minitools/scrapers/web_document.py`）: 本文ルート抽出、ナビ/目次除去、アクティブなタブパネルのみ保持、数式（`\(..\)` / `\[..\]` / MathJax / KaTeX）を `$`/`$$` に変換、URL 絶対化、リンク画像の展開、ソース改行の畳み込み
