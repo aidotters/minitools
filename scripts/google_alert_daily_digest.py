@@ -30,6 +30,39 @@ logger = setup_logger(
 )
 
 
+async def is_feed_stale(
+    reader: NotionReader,
+    database_id: str,
+    hours: int,
+    stale_hours: int,
+    now: datetime,
+) -> bool:
+    """記事が stale_hours 時間 1件も入っていないかを返す。
+
+    Google アラートのメールが止まっても、ダイジェストは毎日「該当記事なし」を
+    送るだけで気づきにくい。集計期間（hours）より長い stale_hours を遡っても
+    記事が無ければ True を返し、呼び出し側が警告を出す。
+
+    stale_hours が hours 以下（=遡る意味がない）や、Notion の取得に失敗した
+    ときは False を返す（判定できないときに警告を出さない）。
+    """
+    if stale_hours <= hours:
+        return False
+    start_date = (now - timedelta(hours=stale_hours)).strftime("%Y-%m-%d")
+    end_date = now.strftime("%Y-%m-%d")
+    try:
+        recent = await reader.get_articles_by_date_range(
+            database_id=database_id,
+            start_date=start_date,
+            end_date=end_date,
+            date_property="Date",
+        )
+    except Exception as e:
+        logger.error(f"Failed to check recent articles for stale warning: {e}")
+        return False
+    return not recent
+
+
 async def generate_digest(
     hours: int,
     top_n: int,
@@ -94,10 +127,18 @@ async def generate_digest(
 
     # 0件処理
     if not articles:
-        if quiet:
+        stale_hours = config.get("defaults.daily_digest.stale_warning_hours", 48)
+        stale = await is_feed_stale(reader, database_id, hours, stale_hours, end_dt)
+        if quiet and not stale:
             logger.info("No articles found (--quiet specified, skipping send)")
             return 0
         empty_msg = slack.format_daily_digest(date=today_str, articles=[])
+        if stale:
+            logger.warning(
+                f"No Google Alerts articles in the past {stale_hours} hours; "
+                "adding warning to Slack message"
+            )
+            empty_msg += "\n\n" + slack.format_stale_alerts_warning(stale_hours)
         if dry_run or not webhook_url:
             print(empty_msg)
             return 0
@@ -249,7 +290,7 @@ Examples:
     parser.add_argument(
         "--quiet",
         action="store_true",
-        help="記事0件のとき Slack 送信をスキップ",
+        help="記事0件のとき Slack 送信をスキップ（記事が長く入っていない警告は送る）",
     )
     parser.add_argument(
         "--embedding",

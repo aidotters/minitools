@@ -581,6 +581,11 @@ uv run google-alert-daily-digest --dry-run
 
 # 0件のときは送信せず終了
 uv run google-alert-daily-digest --quiet
+```
+
+過去24時間が0件で、さらに過去48時間にも記事が1件も無いときは、ダイジェストに「Google Alerts の記事が入っていない」警告を付けて送ります（`--quiet` でも送ります）。Google アラートのメールが止まったことに気づくためです。遡る時間は `settings.yaml` の `defaults.daily_digest.stale_warning_hours`（既定 48）で変えられます。Notion の Date は日付だけなので、実際には2〜3日分を見ます。
+
+```bash
 
 # OpenAI 以外の LLM を使う
 uv run google-alert-daily-digest --provider gemini

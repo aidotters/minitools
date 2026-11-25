@@ -152,7 +152,7 @@ uv run google-alert-weekly-digest --provider ollama  # Use local Ollama instead
 # Default provider: openai
 uv run google-alert-daily-digest --hours 24 --top 10
 uv run google-alert-daily-digest --dry-run            # Preview without sending to Slack
-uv run google-alert-daily-digest --quiet              # Skip Slack send when 0 articles
+uv run google-alert-daily-digest --quiet              # Skip Slack send when 0 articles (still warns when no articles for 48h)
 uv run google-alert-daily-digest --provider gemini    # Use Gemini instead
 
 # ArXiv Weekly Digest (LLM scoring with optional Tavily trend context)
