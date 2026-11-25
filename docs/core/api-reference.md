@@ -839,6 +839,23 @@ class NotionReader:
             NotionReadError: 読み取りに失敗した場合
         """
 
+    async def get_latest_article_date(
+        self,
+        database_id: str,
+        date_property: str = "Date"
+    ) -> Optional[str]:
+        """
+        データベース内で最も新しい記事の日付を返す（降順ソートで1件だけ取得）
+
+        google-alert-daily-digest が0件のとき、供給元がいつから止まっているかを示すのに使う
+
+        Returns:
+            日付（YYYY-MM-DD形式）。記事が無ければ None
+
+        Raises:
+            NotionReadError: 読み取りに失敗した場合
+        """
+
     async def get_database_info(
         self,
         database_id: str
@@ -2730,13 +2747,15 @@ class SlackPublisher:
         self,
         date: str,
         articles: List[Dict[str, Any]],
-        daily_summary: str = ""
+        daily_summary: str = "",
+        warning: str = ""
     ) -> str:
         """
         日次ダイジェストをSlackメッセージ形式にフォーマット
 
         構成:
         - ヘッダー: `📰 Google Alerts Daily Digest ({date})`
+        - `⚠️ {warning}`（warning 空文字なら省略。0件時に供給元の停止を知らせる）
         - `📝 今日のまとめ`セクション（daily_summary 空文字なら省略）
         - `🏆 今日の重要記事 Top N`セクション（importance_score / title / summary / url）
 
@@ -2744,9 +2763,10 @@ class SlackPublisher:
             date: 対象日（YYYY-MM-DD形式）
             articles: 上位記事リスト
             daily_summary: 「今日のまとめ」本文。空文字なら省略
+            warning: ヘッダ直後に出す警告文。空文字なら省略
 
         Returns:
-            フォーマットされたメッセージ（articles が空のときは「本日該当記事なし」のみ）
+            フォーマットされたメッセージ（articles が空のときはヘッダ・警告・「本日該当記事なし」のみ）
         """
 
     def format_weekly_digest(
