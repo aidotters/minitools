@@ -120,6 +120,49 @@ class NotionReader:
             logger.error(f"Failed to fetch articles from Notion: {e}")
             raise NotionReadError(f"Notion API error: {e}") from e
 
+    async def get_latest_article_date(
+        self,
+        database_id: str,
+        date_property: str = "Date",
+    ) -> Optional[str]:
+        """
+        データベース内で最も新しい記事の日付を返す
+
+        Args:
+            database_id: NotionデータベースID
+            date_property: 日付プロパティ名（デフォルト: "Date"）
+
+        Returns:
+            日付（YYYY-MM-DD形式）。記事が無ければ None
+
+        Raises:
+            NotionReadError: 読み取りに失敗した場合
+        """
+        query_params: Dict[str, Any] = {
+            "database_id": database_id,
+            "filter": {"property": date_property, "date": {"is_not_empty": True}},
+            "sorts": [{"property": date_property, "direction": "descending"}],
+            "page_size": 1,
+        }
+
+        def query_db() -> Dict[str, Any]:
+            result = self.client.databases.query(**query_params)
+            return dict(result) if result else {}  # type: ignore[arg-type]
+
+        try:
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(None, query_db)
+        except Exception as e:
+            logger.error(f"Failed to fetch latest article date from Notion: {e}")
+            raise NotionReadError(f"Notion API error: {e}") from e
+
+        results = response.get("results", [])
+        if not results:
+            return None
+        prop = results[0].get("properties", {}).get(date_property, {})
+        start = (prop.get("date") or {}).get("start")
+        return start[:10] if start else None
+
     def _page_to_article(self, page: Dict[str, Any]) -> Dict[str, Any]:
         """
         Notionページを記事辞書に変換

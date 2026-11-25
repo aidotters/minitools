@@ -658,6 +658,7 @@ class SlackPublisher:
         date: str,
         articles: list[dict[str, Any]],
         daily_summary: str = "",
+        warning: str = "",
     ) -> str:
         """
         日次ダイジェストをSlackメッセージ形式にフォーマット
@@ -666,12 +667,16 @@ class SlackPublisher:
             date: 対象日（YYYY-MM-DD形式）
             articles: 上位記事リスト（importance_score / title / summary / url）
             daily_summary: 「今日のまとめ」本文。空文字なら省略
+            warning: ヘッダ直後に出す警告文。空文字なら省略
 
         Returns:
             フォーマットされたメッセージ
         """
         header = f"*📰 Google Alerts Daily Digest ({date})*"
         divider = "─" * 30
+
+        if warning:
+            header += f"\n⚠️ {warning}"
 
         if not articles:
             return f"{header}\n本日該当記事なし"

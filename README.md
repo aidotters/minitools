@@ -577,7 +577,7 @@ uv run google-alert-daily-digest --hours 24 --top 10
 # プレビュー（Slack に送信しない）
 uv run google-alert-daily-digest --dry-run
 
-# 0件のときは送信せず終了
+# 0件のときは送信せず終了（警告はログにだけ残る）
 uv run google-alert-daily-digest --quiet
 
 # OpenAI 以外の LLM を使う
@@ -592,6 +592,8 @@ uv run google-alert-daily-digest --embedding openai
 # 出力ファイルにも保存
 uv run google-alert-daily-digest --output outputs/daily.md
 ```
+
+記事が0件の日は、「本日該当記事なし」に警告を添えて送る。通常は1日に数十件以上入るため、0件は供給元（Google アラートのメール → `google-alerts` → Notion）が止まっている合図として扱う。警告には Notion で最後に入った記事の日付と、それが何日前かを入れる。
 
 Slack メッセージは「📝 今日のまとめ」（過去24時間の全記事を俯瞰した4〜6文の日本語サマリ）と「🏆 今日の重要記事 Top N」の2セクションで構成される。
 
