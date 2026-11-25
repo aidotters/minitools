@@ -4,12 +4,6 @@
 
 ## [Unreleased]
 
-### Added
-- **`google-alert-daily-digest` に「記事が長く入っていない」警告を追加** (2026-11-25)
-  - 2026-11-20 を最後に Google アラートのメールが届かなくなったが、ダイジェストは毎日「本日該当記事なし」を送るだけで気づけなかった
-  - 0件の日は過去48時間（`defaults.daily_digest.stale_warning_hours`）を遡り、それでも0件なら Slack に警告を付ける。`--quiet` でも警告は送る。Notion の取得に失敗したときは警告しない
-  - テスト: `tests/test_daily_digest_stale.py`
-
 ### Removed
 - **`google-alerts` の Slack 送信を廃止（#google-alerts-summary への投稿をやめる）** (2026-11-25)
   - 1日3回の記事一覧の投稿は読まれていなかった。Slack への配信は `google-alert-daily-digest`（毎日 19:00・Notion から Top10）だけにする

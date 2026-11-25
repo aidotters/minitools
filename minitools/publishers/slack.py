@@ -653,23 +653,6 @@ class SlackPublisher:
         sections = SlackPublisher.format_x_trend_digest_sections(process_result)
         return "\n".join(sections)
 
-    @staticmethod
-    def format_stale_alerts_warning(hours: int) -> str:
-        """Google Alerts の記事が長く入っていないときの警告文を返す。
-
-        Args:
-            hours: 記事が1件も入っていない期間（時間）
-
-        Returns:
-            警告メッセージ
-        """
-        return (
-            f"⚠️ *Google Alerts の記事が過去{hours}時間 1件も入っていません。*\n"
-            "Google アラートのメールが届いていないか、google-alerts の取り込みが"
-            "止まっている可能性があります。Gmail に googlealerts-noreply@google.com "
-            "からのメールが届いているか確認してください。"
-        )
-
     def format_daily_digest(
         self,
         date: str,
