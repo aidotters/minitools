@@ -5,6 +5,11 @@
 ## [Unreleased]
 
 ### Added
+- **`google-alert-daily-digest` が0件の日に警告を出す** (2026-11-25)
+  - 記事が0件のとき、「本日該当記事なし」に「最後に入った記事の日付（N日前）」と確認先（Gmail の `from:googlealerts-noreply@google.com`、`outputs/logs/google_alerts.log`）を添えて Slack へ送る。ログにも WARNING を残す
+  - 2026-11-21 から Google アラートのメールが届かず、11/22〜24 は「本日該当記事なし」だけが送られていて、止まっていることに気づけなかったため
+  - `NotionReader.get_latest_article_date()` を追加（降順ソートで1件だけ取得）。`format_daily_digest()` に `warning` 引数を追加
+  - テスト: `tests/test_daily_digest_empty_warning.py`
 - **ドキュメント一式を現行コードに合わせて更新** (2026-11-24)
   - `docs/core/` の architecture / api-reference / repo-structure / diagrams / dev-guidelines を、HF Daily Papers 版の `arxiv`・週次ページ・`arxiv-search`・`wait_for_network`・`TranslationError`・`article_dates` に合わせて更新
 - **`arxiv-search` コマンド追加（キーワード検索の手動実行）** (2026-11-24)

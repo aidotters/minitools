@@ -13,7 +13,7 @@ import argparse
 import asyncio
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from minitools.llm import get_embedding_client, get_llm_client
@@ -28,6 +28,41 @@ logger = setup_logger(
     name="scripts.google_alert_daily_digest",
     log_file="google_alert_daily_digest.log",
 )
+
+
+def build_empty_warning(
+    latest_date: str | None, today: date, lookup_failed: bool = False
+) -> str:
+    """記事が0件だったときに Slack へ出す警告文を作る。
+
+    通常は1日に数十〜数百件入るので、0件は供給元（Google アラートのメール →
+    google-alerts → Notion）が止まっている合図として扱う。
+
+    Args:
+        latest_date: Notion で最も新しい記事の日付（YYYY-MM-DD）。不明なら None
+        today: 今日の日付
+        lookup_failed: 最新日付の取得自体に失敗したか
+
+    Returns:
+        警告文
+    """
+    check = (
+        "Google アラートのメールが届いているか"
+        "（Gmail で from:googlealerts-noreply@google.com）と、"
+        "google-alerts のログ（outputs/logs/google_alerts.log）を確認してください。"
+    )
+    if lookup_failed:
+        return f"記事が0件でした（最後に入った日付は取得に失敗）。{check}"
+    if not latest_date:
+        return f"Notion に Google Alerts の記事が見当たりません。{check}"
+    try:
+        days = (today - date.fromisoformat(latest_date[:10])).days
+    except ValueError:
+        return f"最後に入った記事の日付を読めませんでした（{latest_date}）。{check}"
+    return (
+        f"Google Alerts の記事が Notion に入っていません。"
+        f"最後に入ったのは {latest_date[:10]}（{days}日前）です。{check}"
+    )
 
 
 async def generate_digest(
@@ -92,12 +127,25 @@ async def generate_digest(
 
     slack = SlackPublisher()
 
-    # 0件処理
+    # 0件処理（通常は1日に数十件以上入るので、0件は供給元が止まっている合図として警告を付ける）
     if not articles:
+        latest_date: str | None = None
+        lookup_failed = False
+        try:
+            latest_date = await reader.get_latest_article_date(
+                database_id=database_id, date_property="Date"
+            )
+        except Exception as e:
+            logger.error(f"Failed to fetch latest article date: {e}")
+            lookup_failed = True
+        warning = build_empty_warning(latest_date, end_dt.date(), lookup_failed)
+        logger.warning(f"No articles found: {warning}")
         if quiet:
             logger.info("No articles found (--quiet specified, skipping send)")
             return 0
-        empty_msg = slack.format_daily_digest(date=today_str, articles=[])
+        empty_msg = slack.format_daily_digest(
+            date=today_str, articles=[], warning=warning
+        )
         if dry_run or not webhook_url:
             print(empty_msg)
             return 0
@@ -249,7 +297,7 @@ Examples:
     parser.add_argument(
         "--quiet",
         action="store_true",
-        help="記事0件のとき Slack 送信をスキップ",
+        help="記事0件のとき Slack 送信をスキップ（警告もログにだけ残る）",
     )
     parser.add_argument(
         "--embedding",
