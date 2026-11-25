@@ -235,7 +235,6 @@ NOTION_DB_ID_GOOGLE_ALERTS="your_google_alerts_database_id"
 # Slack Webhooks（オプション）
 SLACK_WEBHOOK_URL="your_arxiv_slack_webhook"
 SLACK_WEBHOOK_URL_MEDIUM_DAILY_DIGEST="your_medium_slack_webhook"
-SLACK_WEBHOOK_URL_GOOGLE_ALERTS="your_google_alerts_slack_webhook"
 
 # Gmail API（Medium/Google Alerts用）
 GMAIL_CREDENTIALS_PATH="credentials.json"
@@ -532,6 +531,9 @@ uv run google-alerts --hours 12
 # 特定の日付のアラートを処理
 uv run google-alerts --date 2024-01-15
 ```
+
+`google-alerts` は Notion への保存だけを行い、Slack には送らない。Slack へは
+`google-alert-daily-digest`（毎日 19:00・Notion から Top10 を選ぶ）が送る。
 
 #### Google Alerts記事の全文翻訳
 ```bash

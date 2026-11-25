@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 from minitools.collectors.google_alerts import GoogleAlertsCollector
 from minitools.processors.translator import Translator
 from minitools.publishers.notion import NotionPublisher
-from minitools.publishers.slack import SlackPublisher
 from minitools.utils.logger import setup_logger
 from minitools.utils.config import get_config
 from minitools.utils.network import wait_for_network
@@ -43,8 +42,14 @@ async def main_async():
     parser.add_argument(
         "--date", type=str, help="特定の日付のメールを取得 (YYYY-MM-DD形式)"
     )
-    parser.add_argument("--notion", action="store_true", help="Notionへの保存のみ実行")
-    parser.add_argument("--slack", action="store_true", help="Slackへの送信のみ実行")
+    # Slack への記事一覧の送信は廃止した（#google-alerts-summary は読まれておらず、
+    # 日次の Top10 は google-alert-daily-digest が Notion から作って送る）。
+    # --notion は以前の呼び出し方との互換のために受け付けるだけで、挙動は変わらない。
+    parser.add_argument(
+        "--notion",
+        action="store_true",
+        help="（互換用）Notionへ保存する。既定の挙動と同じ",
+    )
     parser.add_argument("--debug", action="store_true", help="デバッグモードで実行")
 
     args = parser.parse_args()
@@ -66,7 +71,7 @@ async def main_async():
     )
 
     # スリープ復帰直後の実行に備え、名前解決できるまで待つ
-    if not wait_for_network(["gmail.googleapis.com", "hooks.slack.com"]):
+    if not wait_for_network(["gmail.googleapis.com"]):
         logger.error("ネットワーク未接続のため処理を中止します")
         sys.exit(1)
 
@@ -84,17 +89,7 @@ async def main_async():
     else:
         logger.info(f"過去{args.hours}時間のGoogle Alertsメールを取得します")
 
-    # フラグの処理
-    save_notion = not args.slack or args.notion
-    send_slack = not args.notion or args.slack
-
-    # 処理内容のログ出力
-    if save_notion and send_slack:
-        logger.info("処理内容: Notion保存 + Slack送信")
-    elif save_notion:
-        logger.info("処理内容: Notion保存のみ")
-    elif send_slack:
-        logger.info("処理内容: Slack送信のみ")
+    logger.info("処理内容: Notion保存")
 
     # コレクターの初期化
     logger.info("Google Alerts Collectorを初期化中...")
@@ -183,7 +178,7 @@ async def main_async():
     logger.info(f"翻訳・要約処理完了: {len(processed_alerts)}件を処理")
 
     # Notionに保存
-    if save_notion and processed_alerts:
+    if processed_alerts:
         # 環境変数名の統一（フォールバック対応）
         database_id = os.getenv("NOTION_GOOGLE_ALERTS_DATABASE_ID") or os.getenv(
             "NOTION_DB_ID_GOOGLE_ALERTS"
@@ -207,27 +202,6 @@ async def main_async():
         else:
             logger.warning(
                 "NOTION_GOOGLE_ALERTS_DATABASE_ID環境変数が設定されていません"
-            )
-
-    # Slackに送信
-    if send_slack and processed_alerts:
-        # 環境変数名の統一（フォールバック対応）
-        webhook_url = os.getenv("SLACK_GOOGLE_ALERTS_WEBHOOK_URL") or os.getenv(
-            "SLACK_WEBHOOK_URL_GOOGLE_ALERTS"
-        )
-        if webhook_url:
-            try:
-                logger.info(
-                    f"Slack送信開始: {len(processed_alerts)}件のアラートを送信中..."
-                )
-                async with SlackPublisher(webhook_url) as slack:
-                    await slack.send_articles(processed_alerts, title="Google Alerts")
-                logger.info("Slackへの送信が完了しました")
-            except Exception as e:
-                logger.error(f"Slackへの送信エラー: {e}")
-        else:
-            logger.warning(
-                "SLACK_GOOGLE_ALERTS_WEBHOOK_URL環境変数が設定されていません"
             )
 
     logger.info("処理が完了しました")

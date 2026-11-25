@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### Removed
+- **`google-alerts` の Slack 送信を廃止（#google-alerts-summary への投稿をやめる）** (2026-11-25)
+  - 1日3回の記事一覧の投稿は読まれていなかった。Slack への配信は `google-alert-daily-digest`（毎日 19:00・Notion から Top10）だけにする
+  - `scripts/google_alerts.py` から Slack 送信と `--slack` を削除。`--notion` は互換のため受け付けるが挙動は変わらない（常に Notion 保存）
+  - `SLACK_GOOGLE_ALERTS_WEBHOOK_URL` / `SLACK_WEBHOOK_URL_GOOGLE_ALERTS` は読まなくなった（`.env` に残っていても害はない）
+
 ### Added
 - **ドキュメント一式を現行コードに合わせて更新** (2026-11-24)
   - `docs/core/` の architecture / api-reference / repo-structure / diagrams / dev-guidelines を、HF Daily Papers 版の `arxiv`・週次ページ・`arxiv-search`・`wait_for_network`・`TranslationError`・`article_dates` に合わせて更新
