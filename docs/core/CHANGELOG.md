@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### Removed
+- **`google-alerts` の Slack 送信を廃止（#google-alerts-summary への投稿をやめる）** (2026-11-25)
+  - 1日3回の記事一覧の投稿は読まれていなかった。Slack への配信は `google-alert-daily-digest`（毎日 19:00・Notion から Top10）だけにする
+  - `scripts/google_alerts.py` から Slack 送信と `--slack` を削除。`--notion` は互換のため受け付けるが挙動は変わらない（常に Notion 保存）
+  - `SLACK_GOOGLE_ALERTS_WEBHOOK_URL` / `SLACK_WEBHOOK_URL_GOOGLE_ALERTS` は読まなくなった（`.env` に残っていても害はない）
+
 ### Added
 - **`google-alert-daily-digest` が0件の日に警告を出す** (2026-11-25)
   - 記事が0件のとき、「本日該当記事なし」に「最後に入った記事の日付（N日前）」と確認先（Gmail の `from:googlealerts-noreply@google.com`、`outputs/logs/google_alerts.log`）を添えて Slack へ送る。ログにも WARNING を残す

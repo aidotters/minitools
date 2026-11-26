@@ -116,9 +116,6 @@ case "$1" in
         if [ -z "$NOTION_API_KEY" ]; then
             echo "Warning: NOTION_API_KEY not set - Notion publishing will be skipped"
         fi
-        if [ -z "$SLACK_GOOGLE_ALERTS_WEBHOOK_URL" ] && [ -z "$SLACK_WEBHOOK_URL" ]; then
-            echo "Warning: Slack webhook not set - Slack notifications will be skipped"
-        fi
         
         exec uv run "$@"
         ;;

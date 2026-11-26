@@ -117,7 +117,7 @@ uv run x-followings --user YOUR_USERNAME           # フォロー一覧を取得
 uv run x-followings --user YOUR_USERNAME --limit 50  # 上限指定
 uv run x-followings --user YOUR_USERNAME --format yaml  # settings.yaml用YAML出力
 
-# Google Alerts processing
+# Google Alerts processing（Notion 保存のみ。Slack へは google-alert-daily-digest が送る）
 uv run google-alerts --hours 12
 
 # Google Alerts Article Full-Text Translation (Jina AI Reader + LLM)
