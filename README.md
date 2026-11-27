@@ -329,6 +329,23 @@ uv run arxiv --slack
 
 # テストモード（最初の1論文のみ処理）
 uv run arxiv --test
+
+# 定時の回（火〜土 14:30）のうち走らなかった分だけを処理する（抜けが無ければ何もしない）
+uv run arxiv --catch-up
+```
+
+##### launchd での自動実行と、抜けた回の取り戻し
+- `scripts/launchd/com.tak.minitools.arxiv.plist` — 火〜土の 14:30 JST に前日分を処理する
+- `scripts/launchd/com.tak.minitools.arxiv-catchup.plist` — ログインのたびに `--catch-up` を走らせる。
+  launchd の定時実行は、その時刻にユーザーがログアウトしていると走らず、後から追いかけもしないため（2026-11-26 に実際に抜けた）。
+  スリープ中に過ぎた回は launchd が復帰時に走らせるので、こちらは関わらない
+- 最後に処理した対象日は `outputs/arxiv/state.json` に残る（通常の回と取り戻しの回の両方が書く）。
+  取り戻すのは直近7日以内の抜けだけ。記録が無いとき（入れた直後）は、最新の回を処理済みとして記録するだけで何も送らない
+- 2つの回が重なったときは `outputs/arxiv/run.lock` で順に走り、後の回は記録を見て処理済みなら何もしない
+
+```bash
+cp scripts/launchd/com.tak.minitools.arxiv*.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.tak.minitools.arxiv-catchup.plist   # 読み込んだ時点でも1回走る
 ```
 
 #### arXivキーワード検索（手動実行）

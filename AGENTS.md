@@ -49,6 +49,7 @@ uv run arxiv --date 2026-11-20                 # HF Daily Papers の対象日を
 uv run arxiv --min-upvotes 20 --max-papers 5   # 選定条件を上書き
 uv run arxiv --weekly-only --date 2026-11-20   # 週次ページだけ作る（この日を最終日とする7日間）
 uv run arxiv --no-weekly                       # 土曜でも週次ページを作らない
+uv run arxiv --catch-up                        # 定時の回（火〜土 14:30）で抜けた対象日だけ処理（ログイン時に launchd が呼ぶ）
 
 # arXiv キーワード検索（手動実行。毎日の arxiv とは別。保存先は同じ ArXiv Notion DB）
 uv run arxiv-search --keywords "LLM" "agent" --date 2026-11-20 --days 3

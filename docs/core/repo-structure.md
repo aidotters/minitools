@@ -249,6 +249,7 @@ LLMを使用してコンテンツを処理するモジュール群。
 | `processed_store.py` | 処理済み動画のper-profile記録（youtube-mail-digest） | JSON永続化 |
 | `logger.py` | カラー対応ログ出力 | ColoredFormatter |
 | `network.py` | 名前解決が通るまで待機（launchd のスリープ復帰直後対策） | ポーリング |
+| `arxiv_catchup.py` | `arxiv --catch-up` の判定（抜けた対象日）と記録（`outputs/arxiv/state.json`）・二重起動の排他 | JSON・fcntl |
 
 ### scripts/ (CLIエントリーポイント)
 

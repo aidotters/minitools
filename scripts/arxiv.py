@@ -5,6 +5,7 @@ arXiv 論文の収集スクリプト。
 Hugging Face Daily Papers に前日載った論文のうち、upvote の多いものだけを
 日本語に翻訳・要約して Notion に保存し、Slack に通知する。
 土曜日の実行では、その週に保存した論文の上位をまとめた「今週の注目論文」ページも作る。
+`--catch-up` は、ログアウト中などで定時の回が走らなかった対象日だけを処理する。
 """
 
 import os
@@ -31,6 +32,13 @@ from minitools.processors.translator import Translator
 from minitools.publishers.notion import NotionPublisher
 from minitools.publishers.slack import SlackPublisher
 from minitools.researchers.hf_papers import HFPapersResearcher
+from minitools.utils.arxiv_catchup import (
+    load_last_done,
+    missed_targets,
+    record_done,
+    run_lock,
+    scheduled_targets,
+)
 from minitools.utils.config import get_config
 from minitools.utils.logger import setup_logger
 from minitools.utils.network import wait_for_network
@@ -72,6 +80,11 @@ def _parse_args(yesterday: str) -> argparse.Namespace:
         "--weekly-only",
         action="store_true",
         help="日次処理をせず、--date を最終日とする週次ページだけを作る",
+    )
+    parser.add_argument(
+        "--catch-up",
+        action="store_true",
+        help="定時の回（火〜土 14:30）のうち抜けた分だけを実行する（ログイン時に launchd が呼ぶ）",
     )
     parser.add_argument("--debug", action="store_true", help="デバッグモードで実行")
     parser.add_argument(
@@ -136,32 +149,63 @@ async def main_async():
     send_slack = not args.notion or args.slack
     database_id = os.getenv("NOTION_ARXIV_DATABASE_ID") or os.getenv("NOTION_DB_ID")
 
-    # スリープ復帰直後の実行に備え、名前解決できるまで待つ
-    if not wait_for_network(["huggingface.co", "hooks.slack.com"]):
-        logger.error("ネットワーク未接続のため処理を中止します")
-        sys.exit(1)
-
-    async with HFPapersResearcher() as researcher:
-        if not args.weekly_only:
-            await _run_daily(
-                researcher,
-                base_date,
-                min_upvotes,
-                max_papers,
-                focus_keywords,
-                database_id,
-                save_notion,
-                send_slack,
-                args.test,
+    # 定時の回と取り戻しの回が重ならないよう、終わるまで待ってから進める
+    with run_lock():
+        if args.catch_up:
+            now = datetime.now(jst)
+            last_done = load_last_done()
+            if last_done is None:
+                # 入れた直後は、どの回が済んでいるか分からない。最新の回を済みとして記録だけする
+                latest = scheduled_targets(now)[-1:]
+                if latest:
+                    record_done(latest[0])
+                logger.info(
+                    "取り戻しの記録が無いため、最新の回を処理済みとして記録だけしました"
+                )
+                return
+            target_dates = missed_targets(now, last_done)
+            if not target_dates:
+                logger.info("取り戻す回はありません（定時の回はすべて処理済み）")
+                return
+            logger.info(
+                "抜けた回を取り戻します: "
+                + ", ".join(d.isoformat() for d in target_dates)
             )
+        else:
+            target_dates = [base_date]
 
-        make_weekly = args.weekly_only or (
-            base_date.weekday() == WEEKLY_BASE_WEEKDAY
-            and save_notion
-            and not args.no_weekly
-        )
-        if make_weekly:
-            await _run_weekly(researcher, database_id, base_date, weekly_top)
+        # スリープ復帰直後の実行に備え、名前解決できるまで待つ
+        if not wait_for_network(["huggingface.co", "hooks.slack.com"]):
+            logger.error("ネットワーク未接続のため処理を中止します")
+            sys.exit(1)
+
+        # 通常の形（Notion と Slack の両方）で日次を終えた回だけ記録する
+        records = not args.weekly_only and not args.test and save_notion and send_slack
+
+        async with HFPapersResearcher() as researcher:
+            for target in target_dates:
+                if not args.weekly_only:
+                    await _run_daily(
+                        researcher,
+                        target,
+                        min_upvotes,
+                        max_papers,
+                        focus_keywords,
+                        database_id,
+                        save_notion,
+                        send_slack,
+                        args.test,
+                    )
+                    if records:
+                        record_done(target)
+
+                make_weekly = args.weekly_only or (
+                    target.weekday() == WEEKLY_BASE_WEEKDAY
+                    and save_notion
+                    and not args.no_weekly
+                )
+                if make_weekly:
+                    await _run_weekly(researcher, database_id, target, weekly_top)
 
     logger.info("Processing completed")
 

@@ -11,6 +11,12 @@
   - `SLACK_GOOGLE_ALERTS_WEBHOOK_URL` / `SLACK_WEBHOOK_URL_GOOGLE_ALERTS` は読まなくなった（`.env` に残っていても害はない）
 
 ### Added
+- **`arxiv --catch-up` とログイン時の取り戻し（`com.tak.minitools.arxiv-catchup`）** (2026-11-27)
+  - 2026-11-26 は 14:30 にユーザーがログアウトしていて定時の回が走らず、launchd は後から追いかけなかった
+  - 最後に処理した対象日を `outputs/arxiv/state.json` に記録し、ログインのたびに（RunAtLoad）直近7日以内の抜けた対象日だけを処理する。抜けが無ければ何もしない
+  - 定時の回と重なったときは `outputs/arxiv/run.lock` で順に走らせ、二重に Slack へ送らない
+  - `scripts/launchd/` に arxiv の plist 2本を追加（定時の回は既存の設定をそのまま収録）
+  - テスト: `tests/test_arxiv_catchup.py`
 - **`google-alert-daily-digest` が0件の日に警告を出す** (2026-11-25)
   - 記事が0件のとき、「本日該当記事なし」に「最後に入った記事の日付（N日前）」と確認先（Gmail の `from:googlealerts-noreply@google.com`、`outputs/logs/google_alerts.log`）を添えて Slack へ送る。ログにも WARNING を残す
   - 2026-11-21 から Google アラートのメールが届かず、11/22〜24 は「本日該当記事なし」だけが送られていて、止まっていることに気づけなかったため
