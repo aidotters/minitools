@@ -121,6 +121,13 @@ uv run x-followings --user YOUR_USERNAME --format yaml  # settings.yaml用YAML�
 # Google Alerts processing（Notion 保存のみ。Slack へは google-alert-daily-digest が送る）
 uv run google-alerts --hours 12
 
+# Google Alerts が届かなかった期間を取り戻す（Google ニュース検索 → 本文取得 → 翻訳 → Notion 保存）
+# Google はアラートメールを後から送り直さないため、アラートと同じ8キーワードで1日ずつ検索する
+# 日付は記事の公開日（JST）。既に Notion にある URL は保存時にスキップされる
+uv run google-alerts-backfill --from 2026-11-20 --to 2026-11-26 --dry-run   # 検索だけ（保存しない）
+uv run google-alerts-backfill --from 2026-11-20 --to 2026-11-26             # 保存まで
+uv run google-alerts-backfill --from ... --to ... --per-keyword 5           # キーワードごと1日の上限（既定 10）
+
 # Google Alerts Article Full-Text Translation (Jina AI Reader + LLM)
 uv run google-alerts-translate --url "https://example.com/article"
 uv run google-alerts-translate --url "https://..." --url "https://..."  # Multiple

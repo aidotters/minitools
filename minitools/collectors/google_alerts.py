@@ -49,12 +49,20 @@ class Alert:
 class GoogleAlertsCollector:
     """Google Alertsメールを収集するクラス"""
 
-    def __init__(self, credentials_path: Optional[str] = None):
+    def __init__(
+        self, credentials_path: Optional[str] = None, authenticate: bool = True
+    ):
+        """
+        Args:
+            credentials_path: Gmail API の認証情報ファイル
+            authenticate: False なら Gmail に接続しない（記事本文の取得だけに使うとき）
+        """
         self.gmail_service = None
         self.credentials_path = credentials_path or os.getenv(
             "GMAIL_CREDENTIALS_PATH", "credentials.json"
         )
-        self._authenticate_gmail()
+        if authenticate:
+            self._authenticate_gmail()
 
     def _authenticate_gmail(self):
         """Gmail APIの認証"""
