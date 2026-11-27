@@ -103,12 +103,15 @@ class HFPapersResearcher:
 
         return HFPaperStats(arxiv_id=arxiv_id)
 
-    async def get_daily_papers(self, date: str, limit: int = 100) -> list[dict]:
+    async def get_daily_papers(
+        self, date: str, limit: int = 100, *, strict: bool = False
+    ) -> list[dict]:
         """HF Daily Papers の指定日の一覧を取得
 
         Args:
             date: 対象日（YYYY-MM-DD）
             limit: 最大取得件数
+            strict: 取得失敗を空配列ではなく例外として返す
 
         Returns:
             Daily Papers のアイテムのリスト（取得失敗時は空リスト）
@@ -137,12 +140,18 @@ class HFPapersResearcher:
                             f"HF Daily Papers error {response.status} for {date} "
                             f"after {max_retries} retries"
                         )
+                        if strict:
+                            raise RuntimeError(f"Daily Papers unavailable: {date}")
                         return []
 
                     response.raise_for_status()
                     data = await response.json()
                     if not isinstance(data, list):
                         logger.error(f"Unexpected HF Daily Papers response for {date}")
+                        if strict:
+                            raise ValueError(
+                                f"Unexpected Daily Papers response: {date}"
+                            )
                         return []
                     logger.info(f"HF Daily Papers {date}: {len(data)} papers")
                     return data
@@ -159,6 +168,8 @@ class HFPapersResearcher:
                     logger.error(
                         f"Failed to fetch HF Daily Papers {date} after {max_retries} retries: {e}"
                     )
+                    if strict:
+                        raise
                     return []
 
         return []

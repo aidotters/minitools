@@ -16,6 +16,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import argparse
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 
 import pytz
@@ -33,10 +34,12 @@ from minitools.publishers.notion import NotionPublisher
 from minitools.publishers.slack import SlackPublisher
 from minitools.researchers.hf_papers import HFPapersResearcher
 from minitools.utils.arxiv_catchup import (
-    load_last_done,
+    DeliveryState,
+    load_state,
     missed_targets,
-    record_done,
+    required_destinations,
     run_lock,
+    save_state,
     scheduled_targets,
 )
 from minitools.utils.config import get_config
@@ -46,9 +49,6 @@ from minitools.utils.network import wait_for_network
 load_dotenv()
 
 logger: logging.Logger = logging.getLogger("scripts.arxiv")
-
-# launchd は火〜土に走り、対象日は前日。土曜の実行（対象日=金曜）で週次ページを作る
-WEEKLY_BASE_WEEKDAY = 4
 
 
 def main():
@@ -149,42 +149,71 @@ async def main_async():
     send_slack = not args.notion or args.slack
     database_id = os.getenv("NOTION_ARXIV_DATABASE_ID") or os.getenv("NOTION_DB_ID")
 
-    # 定時の回と取り戻しの回が重ならないよう、終わるまで待ってから進める
-    with run_lock():
-        if args.catch_up:
-            now = datetime.now(jst)
-            last_done = load_last_done()
-            if last_done is None:
-                # 入れた直後は、どの回が済んでいるか分からない。最新の回を済みとして記録だけする
-                latest = scheduled_targets(now)[-1:]
-                if latest:
-                    record_done(latest[0])
-                logger.info(
-                    "取り戻しの記録が無いため、最新の回を処理済みとして記録だけしました"
-                )
-                return
-            target_dates = missed_targets(now, last_done)
-            if not target_dates:
-                logger.info("取り戻す回はありません（定時の回はすべて処理済み）")
-                return
-            logger.info(
-                "抜けた回を取り戻します: "
-                + ", ".join(d.isoformat() for d in target_dates)
-            )
-        else:
-            target_dates = [base_date]
+    if args.catch_up and (
+        args.test or args.weekly_only or args.notion or args.slack or args.no_weekly
+    ):
+        raise SystemExit("--catch-up は配信先・テストの指定と併用できません")
 
-        # スリープ復帰直後の実行に備え、名前解決できるまで待つ
+    incomplete = False
+    # 完了判定・配信・記録を同じロック内で行う。
+    with run_lock():
+        state = None if args.test else load_state()
+        if state is None and not args.test:
+            due = scheduled_targets(datetime.now(jst))
+            if args.catch_up:
+                if due:
+                    save_state(DeliveryState(due[-1]))
+                logger.info("初回の取り戻しでは過去分を再送しません")
+                return
+            baseline = min(base_date, due[-1] if due else base_date) - timedelta(days=1)
+            state = DeliveryState(baseline)
+            save_state(state)
+
+        requested = set()
+        if not args.weekly_only:
+            if save_notion:
+                requested.add("notion")
+            if send_slack:
+                requested.add("slack")
+        if args.weekly_only or (
+            save_notion
+            and not args.no_weekly
+            and "weekly" in required_destinations(base_date)
+        ):
+            requested.add("weekly")
+
+        if args.catch_up:
+            assert state is not None
+            targets = missed_targets(datetime.now(jst), state)
+            jobs = [
+                (target, state.pending(target, required_destinations(target)))
+                for target in targets
+            ]
+        else:
+            pending = (
+                requested if state is None else state.pending(base_date, requested)
+            )
+            jobs = [(base_date, pending)] if pending else []
+
+        if not jobs:
+            logger.info("未完了の配信はありません")
+            return
+
         if not wait_for_network(["huggingface.co", "hooks.slack.com"]):
             logger.error("ネットワーク未接続のため処理を中止します")
-            sys.exit(1)
-
-        # 通常の形（Notion と Slack の両方）で日次を終えた回だけ記録する
-        records = not args.weekly_only and not args.test and save_notion and send_slack
+            raise SystemExit(1)
 
         async with HFPapersResearcher() as researcher:
-            for target in target_dates:
-                if not args.weekly_only:
+            for target, pending in jobs:
+                done: set[str] = set()
+
+                def confirm(destination: str) -> None:
+                    if state is not None:
+                        state.completed.setdefault(target, set()).add(destination)
+                        save_state(state)
+                    done.add(destination)
+
+                if pending & {"notion", "slack"}:
                     await _run_daily(
                         researcher,
                         target,
@@ -192,21 +221,27 @@ async def main_async():
                         max_papers,
                         focus_keywords,
                         database_id,
-                        save_notion,
-                        send_slack,
+                        "notion" in pending,
+                        "slack" in pending,
                         args.test,
+                        confirm,
                     )
-                    if records:
-                        record_done(target)
 
-                make_weekly = args.weekly_only or (
-                    target.weekday() == WEEKLY_BASE_WEEKDAY
-                    and save_notion
-                    and not args.no_weekly
-                )
-                if make_weekly:
-                    await _run_weekly(researcher, database_id, target, weekly_top)
+                # 日次の Notion が未完了なら、不完全な週次ページを作らない。
+                if "weekly" in pending and (
+                    args.weekly_only or "notion" not in pending or "notion" in done
+                ):
+                    if await _run_weekly(researcher, database_id, target, weekly_top):
+                        confirm("weekly")
 
+                if pending - done:
+                    incomplete = True
+                    logger.error(
+                        "未完了 %s: %s", target, ", ".join(sorted(pending - done))
+                    )
+
+    if incomplete:
+        raise SystemExit(1)
     logger.info("Processing completed")
 
 
@@ -220,9 +255,14 @@ async def _run_daily(
     save_notion: bool,
     send_slack: bool,
     test_mode: bool,
+    confirm: Callable[[str], None],
 ) -> None:
     hf_date = base_date.isoformat()
-    items = await researcher.get_daily_papers(hf_date)
+    try:
+        items = await researcher.get_daily_papers(hf_date, strict=True)
+    except Exception:
+        logger.exception("HF の日次データを取得できません: %s", hf_date)
+        return
     papers = build_daily_selection(
         items, hf_date, min_upvotes, max_papers, focus_keywords
     )
@@ -237,40 +277,53 @@ async def _run_daily(
 
     processed = await _translate(papers) if papers else []
 
-    if save_notion and processed:
-        if database_id:
+    if len(processed) != len(papers):
+        logger.error("翻訳が未完了のため配信を保留: %s", hf_date)
+        return
+
+    if save_notion:
+        notion_ok = not processed
+        if processed and database_id:
             try:
                 publisher = NotionPublisher(source_type="arxiv")
                 await publisher.ensure_arxiv_properties(database_id)
-                result = await publisher.batch_save_articles(database_id, processed)
-                stats = result.get("stats", {})
-                logger.info("=" * 60)
-                logger.info("Notion保存結果:")
-                logger.info(f"  成功: {stats.get('success', 0)}件")
-                logger.info(f"  スキップ (既存): {stats.get('skipped', 0)}件")
-                logger.info(f"  失敗: {stats.get('failed', 0)}件")
-                logger.info("=" * 60)
-            except Exception as e:
-                logger.error(f"Notion保存エラー: {e}")
-        else:
-            logger.warning("NOTION_ARXIV_DATABASE_ID環境変数が設定されていません")
+                stats = (
+                    await publisher.batch_save_articles(
+                        database_id, processed, strict=True
+                    )
+                )["stats"]
+                notion_ok = stats["failed"] == 0 and (
+                    stats["success"] + stats["skipped"] == len(processed)
+                )
+                logger.info("Notion保存結果: %s", stats)
+            except Exception:
+                logger.exception("Notion保存エラー: %s", hf_date)
+        elif processed:
+            logger.error("Notion データベース ID が未設定です")
+        if notion_ok:
+            confirm("notion")
 
-    # Slackに送信（論文が0件でも通知）
     if send_slack:
         webhook_url = os.getenv("SLACK_ARXIV_WEBHOOK_URL") or os.getenv(
             "SLACK_WEBHOOK_URL"
         )
+        slack_ok = False
         if webhook_url:
             try:
                 async with SlackPublisher(webhook_url) as slack:
-                    await slack.send_articles(
+                    slack_ok = await slack.send_articles(
                         processed,
                         date=hf_date,
                         title="Hugging Face 注目論文",
                     )
-                logger.info("Sent to Slack")
-            except Exception as e:
-                logger.error(f"Error sending to Slack: {e}")
+            except Exception:
+                # Webhook URL をログに含めない。
+                logger.error("Slack送信エラー: %s", hf_date)
+        else:
+            logger.error("Slack Webhook が未設定です")
+        if slack_ok:
+            confirm("slack")
+            logger.info("Sent to Slack")
 
 
 async def _run_weekly(
@@ -278,15 +331,18 @@ async def _run_weekly(
     database_id: str | None,
     end: date,
     top_n: int,
-) -> None:
+) -> bool:
     if not database_id:
-        logger.warning("NOTION_ARXIV_DATABASE_ID 未設定のため週次ページを作りません")
-        return
+        logger.error("Notion データベース ID が未設定のため週次ページを作れません")
+        return False
     try:
         publisher = NotionPublisher(source_type="arxiv")
-        await create_weekly_page(publisher, researcher, database_id, end, top_n)
-    except Exception as e:
-        logger.error(f"週次ページの作成エラー: {e}")
+        return bool(
+            await create_weekly_page(publisher, researcher, database_id, end, top_n)
+        )
+    except Exception:
+        logger.exception("週次ページの作成エラー: %s", end)
+        return False
 
 
 if __name__ == "__main__":
