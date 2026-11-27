@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tak.minitools.arxiv-catchup</string>
+    <!--
+      ログインのたびに（RunAtLoad）、定時の com.tak.minitools.arxiv（火〜土 14:30）の
+      うち走らなかった回だけを処理する。launchd の定時実行は、その時刻にユーザーが
+      ログアウトしていると走らず、後から追いかけもしない（2026-11-26 に実際に抜けた）。
+      抜けが無ければ何もせずに終わる。記録は outputs/arxiv/state.json。
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/uv</string>
+        <string>run</string>
+        <string>scripts/arxiv.py</string>
+        <string>--catch-up</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/tak/Projects/tools/minitools</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/Users/tak/.asdf/shims:/opt/homebrew/bin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/tak/Projects/tools/minitools/logs/arxiv.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tak/Projects/tools/minitools/logs/arxiv.log</string>
+</dict>
+</plist>
