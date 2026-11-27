@@ -71,6 +71,14 @@ DEFAULT_KEYWORDS: List[AlertKeyword] = [
 ]
 
 
+VIDEO_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+
+
+def is_video_url(url: str) -> bool:
+    """本文を取れない動画ページか（通常のアラートのニュース欄には出ないので除く）"""
+    return urllib.parse.urlparse(url).netloc.lower() in VIDEO_HOSTS
+
+
 def build_search_url(keyword: AlertKeyword, day: date) -> str:
     """1日分の Google ニュース RSS 検索 URL を作る（after は当日、before は翌日）"""
     nxt = day + timedelta(days=1)
@@ -297,9 +305,13 @@ class GoogleNewsBackfillCollector:
         seen = set()
         result: List[Alert] = []
         dropped = 0
+        videos = 0
         for alert, url in zip(alerts, resolved):
             if not url:
                 dropped += 1
+                continue
+            if is_video_url(url):
+                videos += 1
                 continue
             if url in seen:
                 continue
@@ -308,6 +320,6 @@ class GoogleNewsBackfillCollector:
             result.append(alert)
         logger.info(
             f"取り戻し候補 {len(alerts)}件 → 元記事の URL に戻せた重複なし {len(result)}件"
-            f"（戻せず捨てた {dropped}件）"
+            f"（戻せず捨てた {dropped}件・動画で除いた {videos}件）"
         )
         return result

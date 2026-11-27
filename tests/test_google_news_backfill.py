@@ -159,3 +159,11 @@ async def test_collect_resolves_urls_drops_failures_and_dedups(monkeypatch):
     alerts = await collector.collect(DAY, DAY)
     assert [a.url for a in alerts] == ["https://site.example/s"]
     assert alerts[0].email_date == "2026-11-22"
+
+
+def test_is_video_url():
+    from minitools.collectors.google_news_backfill import is_video_url
+
+    assert is_video_url("https://youtu.be/abc")
+    assert is_video_url("https://www.youtube.com/watch?v=abc")
+    assert not is_video_url("https://fortune.com/2026/11/22/ai/")

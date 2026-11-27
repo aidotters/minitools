@@ -58,6 +58,10 @@ async def main_async():
     parser.add_argument(
         "--dry-run", action="store_true", help="検索だけして件数と見出しを表示する"
     )
+    parser.add_argument(
+        "--output",
+        help="dry-run の一覧（TSV: 日付・ソース・見出し・URL）を書き出すファイル。省略時は標準出力",
+    )
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
@@ -83,8 +87,13 @@ async def main_async():
         logger.info(f"  {day}: {by_day[day]}件")
 
     if args.dry_run:
-        for a in alerts:
-            print(f"{a.email_date}\t{a.source}\t{a.title}\t{a.url}")
+        lines = [f"{a.email_date}\t{a.source}\t{a.title}\t{a.url}" for a in alerts]
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + ("\n" if lines else ""))
+        else:
+            for line in lines:
+                print(line)
         logger.info(f"dry-run: {len(alerts)}件（保存はしていません）")
         return
 
