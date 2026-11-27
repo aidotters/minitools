@@ -167,3 +167,28 @@ def test_is_video_url():
     assert is_video_url("https://youtu.be/abc")
     assert is_video_url("https://www.youtube.com/watch?v=abc")
     assert not is_video_url("https://fortune.com/2026/11/22/ai/")
+
+
+def test_drop_already_saved_keeps_only_new():
+    import asyncio
+    import logging
+    from types import SimpleNamespace
+
+    from scripts.google_alerts_backfill import drop_already_saved
+
+    saved = {"https://a.example/1"}
+
+    class FakePublisher:
+        async def check_existing(self, database_id, url):
+            return url in saved
+
+    alerts = [
+        SimpleNamespace(url="https://a.example/1"),
+        SimpleNamespace(url="https://b.example/2"),
+    ]
+    remaining = asyncio.run(
+        drop_already_saved(
+            alerts, FakePublisher(), "db", logging.getLogger("t"), interval=0
+        )
+    )
+    assert [a.url for a in remaining] == ["https://b.example/2"]

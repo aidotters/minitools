@@ -29,7 +29,9 @@ logger = None
 
 
 async def process_and_save_alerts(
-    collector: GoogleAlertsCollector, all_alerts: List[Alert]
+    collector: GoogleAlertsCollector,
+    all_alerts: List[Alert],
+    max_concurrent_saves: int = 3,
 ) -> Dict[str, Any]:
     """
     アラートの本文を取り、翻訳・要約して Notion に保存する。
@@ -99,7 +101,7 @@ async def process_and_save_alerts(
                 )
                 publisher = NotionPublisher(source_type="google_alerts")
                 stats = await publisher.batch_save_articles(
-                    database_id, processed_alerts
+                    database_id, processed_alerts, max_concurrent=max_concurrent_saves
                 )
                 log.info(f"Notion保存完了: {stats}")
                 stats_data = stats.get("stats", {})
