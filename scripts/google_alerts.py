@@ -12,9 +12,10 @@ import asyncio
 import argparse
 import logging
 from datetime import datetime
+from typing import Any, Dict, List
 from dotenv import load_dotenv
 
-from minitools.collectors.google_alerts import GoogleAlertsCollector
+from minitools.collectors.google_alerts import Alert, GoogleAlertsCollector
 from minitools.processors.translator import Translator
 from minitools.publishers.notion import NotionPublisher
 from minitools.utils.logger import setup_logger
@@ -25,6 +26,92 @@ load_dotenv()
 
 # ロガーは後で初期化（argparseの前には基本設定のみ）
 logger = None
+
+
+async def process_and_save_alerts(
+    collector: GoogleAlertsCollector, all_alerts: List[Alert]
+) -> Dict[str, Any]:
+    """
+    アラートの本文を取り、翻訳・要約して Notion に保存する。
+
+    通常の実行（メールから）と取り戻し（google-alerts-backfill）の両方が使う。
+
+    Returns:
+        Notion 保存の集計（success / skipped / failed）。保存しなかったときは空
+    """
+    log = logger or logging.getLogger("scripts.google_alerts")
+    stats_data: Dict[str, Any] = {}
+    # 記事の本文を取得
+    log.info(f"記事コンテンツ取得開始: {len(all_alerts)}件のアラートを処理中...")
+    await collector.fetch_articles_for_alerts(all_alerts)
+    log.info("記事コンテンツ取得完了")
+
+    # 翻訳と要約
+    translator = Translator()
+    processed_alerts = []
+
+    log.info(f"翻訳・要約処理開始: {len(all_alerts)}件のアラートを処理中...")
+    for i, alert in enumerate(all_alerts, 1):
+        try:
+            log.info(
+                f"  -> 翻訳・要約処理中 ({i}/{len(all_alerts)}): {alert.title[:50]}..."
+            )
+
+            # 記事本文がある場合はそれを、ない場合はスニペットを使用
+            content = alert.article_content if alert.article_content else alert.snippet
+
+            # タイトルと内容を翻訳・要約
+            result = await translator.translate_with_summary(
+                title=alert.title, content=content, author=alert.source
+            )
+
+            log.info(f"    -> 翻訳・要約完了: {result['japanese_title'][:30]}...")
+
+            # 辞書形式に変換
+            processed_alerts.append(
+                {
+                    "title": alert.title,
+                    "url": alert.url,
+                    "source": alert.source,
+                    "japanese_title": result["japanese_title"],
+                    "japanese_summary": result["japanese_summary"],
+                    "date": alert.email_date
+                    if alert.email_date
+                    else datetime.now().strftime("%Y-%m-%d"),
+                }
+            )
+
+        except Exception as e:
+            log.error(f"翻訳・要約エラー ({alert.title}): {e}")
+
+    log.info(f"翻訳・要約処理完了: {len(processed_alerts)}件を処理")
+
+    # Notionに保存
+    if processed_alerts:
+        # 環境変数名の統一（フォールバック対応）
+        database_id = os.getenv("NOTION_GOOGLE_ALERTS_DATABASE_ID") or os.getenv(
+            "NOTION_DB_ID_GOOGLE_ALERTS"
+        )
+        if database_id:
+            try:
+                log.info(
+                    f"Notion保存開始: {len(processed_alerts)}件のアラートを保存中..."
+                )
+                publisher = NotionPublisher(source_type="google_alerts")
+                stats = await publisher.batch_save_articles(
+                    database_id, processed_alerts
+                )
+                log.info(f"Notion保存完了: {stats}")
+                stats_data = stats.get("stats", {})
+                log.info(f"  -> 成功: {stats_data.get('success', 0)}件")
+                log.info(f"  -> スキップ: {stats_data.get('skipped', 0)}件")
+                log.info(f"  -> 失敗: {stats_data.get('failed', 0)}件")
+            except Exception as e:
+                log.error(f"Notion保存エラー: {e}")
+        else:
+            log.warning("NOTION_GOOGLE_ALERTS_DATABASE_ID環境変数が設定されていません")
+
+    return stats_data
 
 
 def main():
@@ -132,77 +219,7 @@ async def main_async():
 
     logger.info(f"{len(all_alerts)}件のアラートを検出しました")
 
-    # 記事の本文を取得
-    logger.info(f"記事コンテンツ取得開始: {len(all_alerts)}件のアラートを処理中...")
-    await collector.fetch_articles_for_alerts(all_alerts)
-    logger.info("記事コンテンツ取得完了")
-
-    # 翻訳と要約
-    translator = Translator()
-    processed_alerts = []
-
-    logger.info(f"翻訳・要約処理開始: {len(all_alerts)}件のアラートを処理中...")
-    for i, alert in enumerate(all_alerts, 1):
-        try:
-            logger.info(
-                f"  -> 翻訳・要約処理中 ({i}/{len(all_alerts)}): {alert.title[:50]}..."
-            )
-
-            # 記事本文がある場合はそれを、ない場合はスニペットを使用
-            content = alert.article_content if alert.article_content else alert.snippet
-
-            # タイトルと内容を翻訳・要約
-            result = await translator.translate_with_summary(
-                title=alert.title, content=content, author=alert.source
-            )
-
-            logger.info(f"    -> 翻訳・要約完了: {result['japanese_title'][:30]}...")
-
-            # 辞書形式に変換
-            processed_alerts.append(
-                {
-                    "title": alert.title,
-                    "url": alert.url,
-                    "source": alert.source,
-                    "japanese_title": result["japanese_title"],
-                    "japanese_summary": result["japanese_summary"],
-                    "date": alert.email_date
-                    if alert.email_date
-                    else datetime.now().strftime("%Y-%m-%d"),
-                }
-            )
-
-        except Exception as e:
-            logger.error(f"翻訳・要約エラー ({alert.title}): {e}")
-
-    logger.info(f"翻訳・要約処理完了: {len(processed_alerts)}件を処理")
-
-    # Notionに保存
-    if processed_alerts:
-        # 環境変数名の統一（フォールバック対応）
-        database_id = os.getenv("NOTION_GOOGLE_ALERTS_DATABASE_ID") or os.getenv(
-            "NOTION_DB_ID_GOOGLE_ALERTS"
-        )
-        if database_id:
-            try:
-                logger.info(
-                    f"Notion保存開始: {len(processed_alerts)}件のアラートを保存中..."
-                )
-                publisher = NotionPublisher(source_type="google_alerts")
-                stats = await publisher.batch_save_articles(
-                    database_id, processed_alerts
-                )
-                logger.info(f"Notion保存完了: {stats}")
-                stats_data = stats.get("stats", {})
-                logger.info(f"  -> 成功: {stats_data.get('success', 0)}件")
-                logger.info(f"  -> スキップ: {stats_data.get('skipped', 0)}件")
-                logger.info(f"  -> 失敗: {stats_data.get('failed', 0)}件")
-            except Exception as e:
-                logger.error(f"Notion保存エラー: {e}")
-        else:
-            logger.warning(
-                "NOTION_GOOGLE_ALERTS_DATABASE_ID環境変数が設定されていません"
-            )
+    await process_and_save_alerts(collector, all_alerts)
 
     logger.info("処理が完了しました")
 
