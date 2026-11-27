@@ -3,18 +3,19 @@ arxiv の抜けた回を取り戻すための記録と判定。
 
 launchd の定時実行（火〜土 14:30 JST・対象日は前日）は、その時刻に
 Mac のユーザーがログアウトしていると走らず、後から追いかけても実行しない。
-ログインのたびに `arxiv --catch-up` を走らせ、ここで「最後に処理した対象日」と
-「本来走っているはずだった回」を突き合わせて、抜けた対象日だけを返す。
+ログインのたびに `arxiv --catch-up` を走らせ、ここで配信先ごとの記録と
+「本来走っているはずだった回」を突き合わせて、未完了の回だけを返す。
 
-記録は `{"last_done": "YYYY-MM-DD"}` の JSON 1つ（outputs/ 配下・git 管理外）。
+記録は outputs/ 配下の JSON（git 管理外）。旧 last_done は再送を避ける移行境界にする。
 """
 
 import fcntl
 import json
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator
 
 from minitools.utils.logger import get_logger
 
@@ -52,55 +53,92 @@ def scheduled_targets(
     return targets
 
 
+DESTINATIONS = frozenset({"notion", "slack", "weekly"})
+
+
+def required_destinations(target: date) -> set[str]:
+    daily = {"notion", "slack"}
+    if target.weekday() == 4:  # 金曜分を処理する土曜に週次ページを作る
+        daily.add("weekly")
+    return daily
+
+
+@dataclass
+class DeliveryState:
+    # 旧版または初回起動以前の不明な日付は、一括で再送しない。
+    baseline: date
+    completed: dict[date, set[str]] = field(default_factory=dict)
+
+    def pending(self, target: date, requested: set[str]) -> set[str]:
+        if target <= self.baseline:
+            return set()
+        return requested - self.completed.get(target, set())
+
+
 def missed_targets(
-    now: datetime,
-    last_done: Optional[date],
-    lookback_days: int = MAX_LOOKBACK_DAYS,
+    now: datetime, state: DeliveryState, lookback_days: int = MAX_LOOKBACK_DAYS
 ) -> list[date]:
-    """
-    取り戻すべき対象日を古い順に返す。
-
-    記録が無いとき（入れた直後）は空を返す。どの回が済んでいるか分からないので、
-    取り戻して Slack へ二重に送るより、何もしないほうを選ぶ。
-    """
-    if last_done is None:
-        return []
-    targets = scheduled_targets(now, lookback_days)
-    return [d for d in targets if d > last_done]
+    return [
+        day
+        for day in scheduled_targets(now, lookback_days)
+        if state.pending(day, required_destinations(day))
+    ]
 
 
-def load_last_done(path: str = DEFAULT_STATE_PATH) -> Optional[date]:
-    """最後に処理した対象日を読む。無い・壊れているときは None"""
-    p = Path(path)
-    if not p.exists():
-        return None
+def load_state(path: str | None = None) -> DeliveryState | None:
+    p = Path(path or DEFAULT_STATE_PATH)
     try:
         raw = json.loads(p.read_text(encoding="utf-8"))
-        return date.fromisoformat(raw["last_done"])
-    except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError) as e:
-        logger.warning(f"{path} の読み込みに失敗（記録なしとして扱う）: {e}")
+    except FileNotFoundError:
         return None
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"配信記録を読めません。再送を避けるため中止: {p}") from exc
+
+    try:
+        if not isinstance(raw, dict):
+            raise ValueError("not an object")
+        if set(raw) == {"last_done"}:
+            return DeliveryState(date.fromisoformat(raw["last_done"]))
+        if raw["version"] != 2 or not isinstance(raw["completed"], dict):
+            raise ValueError("unknown format")
+        complete = {}
+        for day, destinations in raw["completed"].items():
+            if not isinstance(destinations, list) or any(
+                destination not in DESTINATIONS for destination in destinations
+            ):
+                raise ValueError("unknown destination")
+            complete[date.fromisoformat(day)] = set(destinations)
+        return DeliveryState(date.fromisoformat(raw["baseline"]), complete)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"配信記録の形式が不正です。再送を避けるため中止: {p}"
+        ) from exc
 
 
-def record_done(target: date, path: str = DEFAULT_STATE_PATH) -> None:
-    """対象日を処理済みとして記録する。記録より古い日付では戻さない"""
-    current = load_last_done(path)
-    if current is not None and current >= target:
-        return
-    p = Path(path)
+def save_state(state: DeliveryState, path: str | None = None) -> None:
+    p = Path(path or DEFAULT_STATE_PATH)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(
-        json.dumps({"last_done": target.isoformat()}, ensure_ascii=False),
+        json.dumps(
+            {
+                "version": 2,
+                "baseline": state.baseline.isoformat(),
+                "completed": {
+                    day.isoformat(): sorted(destinations)
+                    for day, destinations in sorted(state.completed.items())
+                },
+            }
+        ),
         encoding="utf-8",
     )
     tmp.replace(p)
 
 
 @contextmanager
-def run_lock(path: str = DEFAULT_LOCK_PATH) -> Iterator[None]:
+def run_lock(path: str | None = None) -> Iterator[None]:
     """定時の回と取り戻しの回が同時に走らないよう、終わるまで待って排他する"""
-    p = Path(path)
+    p = Path(path or DEFAULT_LOCK_PATH)
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w") as f:
         fcntl.flock(f, fcntl.LOCK_EX)

@@ -339,9 +339,11 @@ uv run arxiv --catch-up
 - `scripts/launchd/com.tak.minitools.arxiv-catchup.plist` — ログインのたびに `--catch-up` を走らせる。
   launchd の定時実行は、その時刻にユーザーがログアウトしていると走らず、後から追いかけもしないため（2026-11-26 に実際に抜けた）。
   スリープ中に過ぎた回は launchd が復帰時に走らせるので、こちらは関わらない
-- 最後に処理した対象日は `outputs/arxiv/state.json` に残る（通常の回と取り戻しの回の両方が書く）。
-  取り戻すのは直近7日以内の抜けだけ。記録が無いとき（入れた直後）は、最新の回を処理済みとして記録するだけで何も送らない
-- 2つの回が重なったときは `outputs/arxiv/run.lock` で順に走り、後の回は記録を見て処理済みなら何もしない
+- `outputs/arxiv/state.json` に、対象日・配信先（日次Notion、Slack、週次Notion）ごとの成功を記録する。
+  直近7日以内の取り戻しでは未完了の配信先だけ再試行する。旧 `last_done` 以前は自動で再送しない。
+  記録なしで取り戻しを初めて実行したときは、最新の定時回を移行境界として保存するだけで何も送らない。
+- 定時と取り戻しは `outputs/arxiv/run.lock` で順に走り、どちらも成功済みの配信先をスキップする。
+  送信先が受理した直後に通信やプロセスが途切れた場合は、成功を記録できず、再試行で重複する可能性がある。
 
 ```bash
 cp scripts/launchd/com.tak.minitools.arxiv*.plist ~/Library/LaunchAgents/

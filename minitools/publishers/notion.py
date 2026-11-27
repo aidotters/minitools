@@ -319,7 +319,7 @@ class NotionPublisher:
             return None
 
     async def save_article(
-        self, database_id: str, article_data: Dict[str, Any]
+        self, database_id: str, article_data: Dict[str, Any], *, strict: bool = False
     ) -> bool:
         """
         記事をNotionデータベースに保存
@@ -370,6 +370,8 @@ class NotionPublisher:
                 else f"  -> 保存失敗: {title}"
             )
 
+        if strict and not page_id:
+            raise RuntimeError("Notion page creation did not return an ID")
         return page_id is not None
 
     def _build_article_properties(self, article_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -708,7 +710,12 @@ class NotionPublisher:
         return properties
 
     async def batch_save_articles(
-        self, database_id: str, articles: List[Dict[str, Any]], max_concurrent: int = 3
+        self,
+        database_id: str,
+        articles: List[Dict[str, Any]],
+        max_concurrent: int = 3,
+        *,
+        strict: bool = False,
     ) -> Dict[str, Any]:
         """
         複数の記事を並列でNotionに保存
@@ -717,6 +724,7 @@ class NotionPublisher:
             database_id: NotionデータベースID
             articles: 記事データのリスト
             max_concurrent: 最大同時実行数
+            strict: ページ作成失敗を重複スキップではなく失敗として集計する
 
         Returns:
             処理結果の統計と詳細（成功数、スキップ数、失敗数、および各記事のリスト）
@@ -762,7 +770,9 @@ class NotionPublisher:
                         processed_urls.add(url)
 
                 try:
-                    result = await self.save_article(database_id, article)
+                    result = await self.save_article(
+                        database_id, article, **({"strict": True} if strict else {})
+                    )
                     if result:
                         stats["success"] += 1
                         results["success"].append(display_title)
