@@ -7,7 +7,9 @@ Google Alerts が届かなかった期間のニュースを、Google ニュー�
     uv run google-alerts-backfill --from 2026-11-20 --to 2026-11-26
 
 --dry-run では検索と URL の復元だけを行い、本文取得・翻訳・Notion 保存はしない。
-既に Notion にある URL は保存時にスキップされるので、期間が通常のアラートと重なってもよい。
+既に Notion にある URL は、本文取得と翻訳の前に1件ずつ確かめて外す（取り戻しを再実行したとき、
+保存済みの記事をもう一度翻訳しない）。期間が通常のアラートと重なってもよい。
+Notion のレート制限に当たらないよう、確認も保存も1件ずつ行う。
 """
 
 import sys
@@ -25,6 +27,7 @@ from dotenv import load_dotenv
 
 from minitools.collectors.google_alerts import GoogleAlertsCollector
 from minitools.collectors.google_news_backfill import GoogleNewsBackfillCollector
+from minitools.publishers.notion import NotionPublisher
 from minitools.utils.logger import setup_logger
 from minitools.utils.network import wait_for_network
 from scripts import google_alerts
@@ -34,6 +37,31 @@ load_dotenv()
 
 def main():
     asyncio.run(main_async())
+
+
+# 1件ごとの Notion への問い合わせの間隔（秒）。Notion の上限は平均で毎秒3回
+NOTION_CHECK_INTERVAL = 0.4
+
+
+async def drop_already_saved(
+    alerts, publisher, database_id, logger, interval=NOTION_CHECK_INTERVAL
+):
+    """Notion に既にある URL を外す。確認は1件ずつ行う。
+
+    check_existing は問い合わせに失敗すると「ある」とみなす（安全のためスキップ）ので、
+    その記事はこの実行では処理されず、次の実行で拾われる。
+    """
+    remaining = []
+    for i, alert in enumerate(alerts):
+        if i and interval:
+            await asyncio.sleep(interval)
+        if not await publisher.check_existing(database_id, alert.url):
+            remaining.append(alert)
+    logger.info(
+        f"Notion に既にある（または確かめられなかった）{len(alerts) - len(remaining)}件を外しました。"
+        f"残り {len(remaining)}件を処理します"
+    )
+    return remaining
 
 
 def _parse_day(value: str):
@@ -101,8 +129,18 @@ async def main_async():
         logger.warning("取り戻せる記事がありませんでした")
         return
 
+    database_id = os.getenv("NOTION_GOOGLE_ALERTS_DATABASE_ID") or os.getenv(
+        "NOTION_DB_ID_GOOGLE_ALERTS"
+    )
+    if database_id:
+        publisher = NotionPublisher(source_type="google_alerts")
+        alerts = await drop_already_saved(alerts, publisher, database_id, logger)
+        if not alerts:
+            logger.info("新しく保存する記事はありません")
+            return
+
     fetcher = GoogleAlertsCollector(authenticate=False)
-    await google_alerts.process_and_save_alerts(fetcher, alerts)
+    await google_alerts.process_and_save_alerts(fetcher, alerts, max_concurrent_saves=1)
     logger.info("取り戻しが完了しました")
 
 
